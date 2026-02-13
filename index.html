@@ -1,0 +1,1302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Campaign Performance Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    <style>
+        :root {
+            --bg-primary: #0f1117;
+            --bg-secondary: #1a1d29;
+            --bg-card: #1e2235;
+            --bg-card-hover: #252a40;
+            --border: #2a2f45;
+            --text-primary: #e8eaf0;
+            --text-secondary: #8b8fa3;
+            --text-muted: #5c6078;
+            --accent-blue: #4f8df5;
+            --accent-green: #34d399;
+            --accent-red: #f87171;
+            --accent-yellow: #fbbf24;
+            --accent-purple: #a78bfa;
+            --accent-cyan: #22d3ee;
+            --accent-orange: #fb923c;
+            --accent-pink: #f472b6;
+            --positive: #34d399;
+            --negative: #f87171;
+            --neutral: #fbbf24;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            line-height: 1.5;
+        }
+
+        .dashboard {
+            max-width: 1440px;
+            margin: 0 auto;
+            padding: 32px 40px;
+        }
+
+        /* Header */
+        .header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            margin-bottom: 36px;
+            padding-bottom: 24px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .header-left h1 {
+            font-size: 28px;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+            margin-bottom: 6px;
+        }
+
+        .header-left p {
+            color: var(--text-secondary);
+            font-size: 14px;
+        }
+
+        .header-right {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .date-badge {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 8px 16px;
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .status-badge {
+            background: rgba(52, 211, 153, 0.12);
+            color: var(--accent-green);
+            border: 1px solid rgba(52, 211, 153, 0.2);
+            border-radius: 20px;
+            padding: 6px 14px;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        /* Summary strip */
+        .summary-strip {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 28px;
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            padding: 16px 20px;
+            border: 1px solid var(--border);
+        }
+
+        .summary-item {
+            flex: 1;
+            text-align: center;
+            padding: 0 12px;
+            border-right: 1px solid var(--border);
+        }
+
+        .summary-item:last-child {
+            border-right: none;
+        }
+
+        .summary-item .label {
+            font-size: 11px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            margin-bottom: 4px;
+        }
+
+        .summary-item .value {
+            font-size: 22px;
+            font-weight: 700;
+        }
+
+        /* Grid layout */
+        .grid {
+            display: grid;
+            gap: 20px;
+            margin-bottom: 28px;
+        }
+
+        .grid-4 { grid-template-columns: repeat(4, 1fr); }
+        .grid-3 { grid-template-columns: repeat(3, 1fr); }
+        .grid-2 { grid-template-columns: repeat(2, 1fr); }
+        .grid-2-1 { grid-template-columns: 2fr 1fr; }
+        .grid-1-2 { grid-template-columns: 1fr 2fr; }
+
+        /* Cards */
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 24px;
+            transition: background 0.15s;
+        }
+
+        .card:hover {
+            background: var(--bg-card-hover);
+        }
+
+        .card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 16px;
+        }
+
+        .card-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+        }
+
+        .card-icon {
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+        }
+
+        /* KPI Cards */
+        .kpi-value {
+            font-size: 36px;
+            font-weight: 800;
+            letter-spacing: -1px;
+            margin-bottom: 8px;
+        }
+
+        .kpi-sub {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .kpi-trend {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 12px;
+            font-weight: 600;
+            padding: 3px 8px;
+            border-radius: 6px;
+            margin-left: 8px;
+        }
+
+        .trend-up {
+            background: rgba(52, 211, 153, 0.12);
+            color: var(--accent-green);
+        }
+
+        .trend-down {
+            background: rgba(248, 113, 113, 0.12);
+            color: var(--accent-red);
+        }
+
+        /* Chart containers */
+        .chart-container {
+            position: relative;
+            width: 100%;
+            margin-top: 8px;
+        }
+
+        .chart-container.small { height: 200px; }
+        .chart-container.medium { height: 280px; }
+        .chart-container.large { height: 340px; }
+
+        /* Tables */
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 12px;
+        }
+
+        .data-table th {
+            text-align: left;
+            font-size: 11px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            padding: 10px 12px;
+            border-bottom: 1px solid var(--border);
+            font-weight: 600;
+        }
+
+        .data-table td {
+            padding: 12px;
+            font-size: 13px;
+            border-bottom: 1px solid rgba(42, 47, 69, 0.5);
+            color: var(--text-primary);
+        }
+
+        .data-table tbody tr:hover {
+            background: rgba(79, 141, 245, 0.04);
+        }
+
+        .data-table .num {
+            font-variant-numeric: tabular-nums;
+            font-weight: 600;
+        }
+
+        /* Progress bars */
+        .progress-bar {
+            width: 100%;
+            height: 6px;
+            background: rgba(255,255,255,0.06);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.6s ease;
+        }
+
+        /* Funnel */
+        .funnel-step {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            padding: 14px 0;
+            border-bottom: 1px solid rgba(42, 47, 69, 0.4);
+        }
+
+        .funnel-step:last-child { border-bottom: none; }
+
+        .funnel-bar-wrap {
+            flex: 1;
+        }
+
+        .funnel-bar {
+            height: 28px;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            padding: 0 12px;
+            font-size: 12px;
+            font-weight: 700;
+            color: #fff;
+            transition: width 0.8s ease;
+        }
+
+        .funnel-label {
+            width: 100px;
+            font-size: 13px;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        .funnel-value {
+            width: 80px;
+            text-align: right;
+            font-size: 14px;
+            font-weight: 700;
+        }
+
+        .funnel-rate {
+            width: 60px;
+            text-align: right;
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        /* Sentiment pills */
+        .sentiment-pills {
+            display: flex;
+            gap: 10px;
+            margin-top: 12px;
+        }
+
+        .pill {
+            flex: 1;
+            text-align: center;
+            padding: 14px 12px;
+            border-radius: 10px;
+            border: 1px solid;
+        }
+
+        .pill-positive {
+            background: rgba(52, 211, 153, 0.08);
+            border-color: rgba(52, 211, 153, 0.2);
+        }
+
+        .pill-negative {
+            background: rgba(248, 113, 113, 0.08);
+            border-color: rgba(248, 113, 113, 0.2);
+        }
+
+        .pill-complex {
+            background: rgba(251, 191, 36, 0.08);
+            border-color: rgba(251, 191, 36, 0.2);
+        }
+
+        .pill .pill-count {
+            font-size: 28px;
+            font-weight: 800;
+            margin-bottom: 4px;
+        }
+
+        .pill .pill-label {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            font-weight: 600;
+        }
+
+        .pill-positive .pill-count { color: var(--positive); }
+        .pill-negative .pill-count { color: var(--negative); }
+        .pill-complex .pill-count { color: var(--neutral); }
+        .pill-positive .pill-label { color: rgba(52, 211, 153, 0.7); }
+        .pill-negative .pill-label { color: rgba(248, 113, 113, 0.7); }
+        .pill-complex .pill-label { color: rgba(251, 191, 36, 0.7); }
+
+        /* Ratio display */
+        .ratio-display {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 20px;
+            margin: 20px 0;
+        }
+
+        .ratio-number {
+            font-size: 48px;
+            font-weight: 800;
+        }
+
+        .ratio-separator {
+            font-size: 32px;
+            color: var(--text-muted);
+            font-weight: 300;
+        }
+
+        .ratio-label {
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-top: 4px;
+        }
+
+        /* Section headers */
+        .section-title {
+            font-size: 18px;
+            font-weight: 700;
+            margin-bottom: 16px;
+            padding-top: 8px;
+        }
+
+        /* Responsive */
+        @media (max-width: 1200px) {
+            .grid-4 { grid-template-columns: repeat(2, 1fr); }
+            .grid-3 { grid-template-columns: repeat(2, 1fr); }
+        }
+
+        @media (max-width: 768px) {
+            .dashboard { padding: 20px 16px; }
+            .grid-4, .grid-3, .grid-2, .grid-2-1, .grid-1-2 {
+                grid-template-columns: 1fr;
+            }
+            .header { flex-direction: column; gap: 16px; }
+            .summary-strip { flex-direction: column; }
+            .summary-item { border-right: none; border-bottom: 1px solid var(--border); padding: 10px 0; }
+            .summary-item:last-child { border-bottom: none; }
+        }
+
+        /* Color utilities */
+        .text-blue { color: var(--accent-blue); }
+        .text-green { color: var(--accent-green); }
+        .text-red { color: var(--accent-red); }
+        .text-yellow { color: var(--accent-yellow); }
+        .text-purple { color: var(--accent-purple); }
+        .text-cyan { color: var(--accent-cyan); }
+        .text-orange { color: var(--accent-orange); }
+
+        .bg-blue { background: rgba(79, 141, 245, 0.12); }
+        .bg-green { background: rgba(52, 211, 153, 0.12); }
+        .bg-red { background: rgba(248, 113, 113, 0.12); }
+        .bg-yellow { background: rgba(251, 191, 36, 0.12); }
+        .bg-purple { background: rgba(167, 139, 250, 0.12); }
+
+        /* Sparkline inline */
+        .inline-chart {
+            display: inline-block;
+            width: 80px;
+            height: 24px;
+            vertical-align: middle;
+        }
+
+        /* Donut center text */
+        .donut-center {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+        }
+
+        .donut-center .big {
+            font-size: 28px;
+            font-weight: 800;
+        }
+
+        .donut-center .small {
+            font-size: 11px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+    </style>
+</head>
+<body>
+<div class="dashboard">
+
+    <!-- Header -->
+    <div class="header">
+        <div class="header-left">
+            <h1>Campaign Performance Dashboard</h1>
+            <p>Email outreach campaign analytics &mdash; All campaigns combined</p>
+        </div>
+        <div class="header-right">
+            <div class="date-badge">Jan 6 &ndash; Feb 13, 2025</div>
+            <div class="status-badge">Live</div>
+        </div>
+    </div>
+
+    <!-- Top-level summary strip -->
+    <div class="summary-strip">
+        <div class="summary-item">
+            <div class="label">Total Sent</div>
+            <div class="value text-blue" id="s-sent">--</div>
+        </div>
+        <div class="summary-item">
+            <div class="label">Delivered</div>
+            <div class="value text-cyan" id="s-delivered">--</div>
+        </div>
+        <div class="summary-item">
+            <div class="label">Opened</div>
+            <div class="value text-purple" id="s-opened">--</div>
+        </div>
+        <div class="summary-item">
+            <div class="label">Replied</div>
+            <div class="value text-green" id="s-replied">--</div>
+        </div>
+        <div class="summary-item">
+            <div class="label">Clicked</div>
+            <div class="value text-yellow" id="s-clicked">--</div>
+        </div>
+        <div class="summary-item">
+            <div class="label">Conversions</div>
+            <div class="value text-orange" id="s-conversions">--</div>
+        </div>
+    </div>
+
+    <!-- Row 1: Core KPI cards -->
+    <div class="grid grid-4">
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Open Rate</span>
+                <div class="card-icon bg-purple text-purple">&#9993;</div>
+            </div>
+            <div class="kpi-value text-purple" id="kpi-open-rate">--</div>
+            <div class="kpi-sub" id="kpi-open-detail">-- opened of -- delivered</div>
+        </div>
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Reply Rate</span>
+                <div class="card-icon bg-green text-green">&#8617;</div>
+            </div>
+            <div class="kpi-value text-green" id="kpi-reply-rate">--</div>
+            <div class="kpi-sub" id="kpi-reply-detail">-- replies of -- delivered</div>
+        </div>
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Click Rate</span>
+                <div class="card-icon bg-yellow text-yellow">&#128279;</div>
+            </div>
+            <div class="kpi-value text-yellow" id="kpi-click-rate">--</div>
+            <div class="kpi-sub" id="kpi-click-detail">-- clicks of -- delivered</div>
+        </div>
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Conversion Rate</span>
+                <div class="card-icon bg-blue text-blue">&#127919;</div>
+            </div>
+            <div class="kpi-value text-blue" id="kpi-conv-rate">--</div>
+            <div class="kpi-sub" id="kpi-conv-detail">-- conversions of -- replied</div>
+        </div>
+    </div>
+
+    <!-- Row 2: Funnel + Reply Sentiment -->
+    <div class="grid grid-2">
+        <!-- Engagement Funnel -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Engagement Funnel</span>
+            </div>
+            <div id="funnel-container"></div>
+        </div>
+
+        <!-- Reply Sentiment -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Reply Sentiment Breakdown</span>
+            </div>
+            <div class="sentiment-pills" id="sentiment-pills"></div>
+            <div style="margin-top: 20px;">
+                <div class="card-title" style="margin-bottom: 12px;">Positive vs Negative Ratio</div>
+                <div class="ratio-display" id="ratio-display"></div>
+                <div class="chart-container small">
+                    <canvas id="chart-sentiment"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Row 3: Conversions & Clicks detail -->
+    <div class="grid grid-2">
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Conversions Over Time</span>
+            </div>
+            <div class="chart-container medium">
+                <canvas id="chart-conversions-time"></canvas>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Clicks by Week</span>
+            </div>
+            <div class="chart-container medium">
+                <canvas id="chart-clicks-time"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- Row 4: Target Audience Performance -->
+    <h3 class="section-title">Target Audience Performance</h3>
+    <div class="grid grid-2-1">
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Performance by Audience Segment</span>
+            </div>
+            <table class="data-table" id="table-audience"></table>
+        </div>
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Audience Reply Distribution</span>
+            </div>
+            <div class="chart-container medium" style="display:flex;align-items:center;justify-content:center;">
+                <canvas id="chart-audience-pie"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- Row 5: Email Copies Performance -->
+    <h3 class="section-title">Email Copy Performance</h3>
+    <div class="grid grid-2-1">
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">A/B Test Results by Email Copy</span>
+            </div>
+            <table class="data-table" id="table-copies"></table>
+        </div>
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Open Rate by Copy</span>
+            </div>
+            <div class="chart-container medium">
+                <canvas id="chart-copies-bar"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- Row 6: Step/Sequence Performance + Deliverability -->
+    <h3 class="section-title">Additional Insights</h3>
+    <div class="grid grid-3">
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Sequence Step Performance</span>
+            </div>
+            <div class="chart-container medium">
+                <canvas id="chart-steps"></canvas>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Deliverability Health</span>
+            </div>
+            <div id="deliverability-stats" style="margin-top: 8px;"></div>
+        </div>
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Best Performing Days</span>
+            </div>
+            <div class="chart-container medium">
+                <canvas id="chart-days"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- Row 7: Campaign breakdown table -->
+    <div class="grid" style="grid-template-columns: 1fr;">
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Campaign-Level Breakdown</span>
+            </div>
+            <table class="data-table" id="table-campaigns"></table>
+        </div>
+    </div>
+
+</div>
+
+<script>
+// =============================================================================
+// CAMPAIGN DATA — UPDATE THIS SECTION WITH YOUR ACTUAL DATA
+// =============================================================================
+const DATA = {
+    // Overall campaign metrics
+    overall: {
+        sent: 12480,
+        delivered: 11856,
+        bounced: 624,
+        opened: 5690,
+        uniqueOpens: 4387,
+        clicked: 1423,
+        replied: 891,
+        positiveReplies: 412,
+        negativeReplies: 287,
+        complexReplies: 192,
+        conversions: 147,
+        unsubscribed: 89,
+        spamReports: 12,
+    },
+
+    // Weekly data for time-series charts
+    weekly: [
+        { week: "Jan 6",   sent: 1850, opened: 814, clicks: 198, replies: 124, conversions: 18 },
+        { week: "Jan 13",  sent: 2100, opened: 966, clicks: 241, replies: 152, conversions: 24 },
+        { week: "Jan 20",  sent: 2050, opened: 943, clicks: 234, replies: 148, conversions: 26 },
+        { week: "Jan 27",  sent: 2200, opened: 1034, clicks: 264, replies: 163, conversions: 28 },
+        { week: "Feb 3",   sent: 2180, opened: 985, clicks: 256, replies: 158, conversions: 27 },
+        { week: "Feb 10",  sent: 2100, opened: 948, clicks: 230, replies: 146, conversions: 24 },
+    ],
+
+    // Target audience segments
+    audiences: [
+        { name: "VP of Sales",           sent: 3120, delivered: 2964, opened: 1542, clicks: 487, replies: 298, positive: 148, negative: 87, conversions: 52 },
+        { name: "Head of Marketing",     sent: 2860, delivered: 2717, opened: 1302, clicks: 378, replies: 231, positive: 108, negative: 79, conversions: 38 },
+        { name: "CTO / Tech Leads",      sent: 2540, delivered: 2413, opened: 1108, clicks: 267, replies: 168, positive: 72,  negative: 58, conversions: 28 },
+        { name: "Founders / CEOs",       sent: 2200, delivered: 2090, opened: 942,  clicks: 178, replies: 112, positive: 52,  negative: 38, conversions: 18 },
+        { name: "Director of Ops",       sent: 1760, delivered: 1672, opened: 796,  clicks: 113, replies: 82,  positive: 32,  negative: 25, conversions: 11 },
+    ],
+
+    // Email copy variants
+    emailCopies: [
+        { name: "Copy A — Pain Point Lead",     sent: 3120, delivered: 2964, opened: 1572, clicks: 423, replies: 267, positive: 134, negative: 78, conversions: 46 },
+        { name: "Copy B — Social Proof Lead",    sent: 3100, delivered: 2945, opened: 1486, clicks: 398, replies: 244, positive: 118, negative: 82, conversions: 41 },
+        { name: "Copy C — Question Hook",        sent: 3200, delivered: 3040, opened: 1423, clicks: 342, replies: 218, positive: 96,  negative: 74, conversions: 34 },
+        { name: "Copy D — Direct Value Prop",    sent: 3060, delivered: 2907, opened: 1209, clicks: 260, replies: 162, positive: 64,  negative: 53, conversions: 26 },
+    ],
+
+    // Email sequence steps
+    steps: [
+        { step: "Step 1 — Initial",   sent: 12480, opened: 3420, replied: 486, conversions: 82 },
+        { step: "Step 2 — Follow-up", sent: 9200,  opened: 1520, replied: 245, conversions: 38 },
+        { step: "Step 3 — Breakup",   sent: 6800,  opened: 750,  replied: 160, conversions: 27 },
+    ],
+
+    // Day-of-week performance (reply rates)
+    dayPerformance: [
+        { day: "Mon", replyRate: 8.2 },
+        { day: "Tue", replyRate: 9.1 },
+        { day: "Wed", replyRate: 8.8 },
+        { day: "Thu", replyRate: 7.9 },
+        { day: "Fri", replyRate: 6.4 },
+        { day: "Sat", replyRate: 2.1 },
+        { day: "Sun", replyRate: 1.8 },
+    ],
+
+    // Campaign-level breakdown
+    campaigns: [
+        { name: "Q1 SaaS Outreach — US",     sent: 4200, delivered: 3990, opened: 1956, clicks: 520, replies: 318, positive: 156, conversions: 54 },
+        { name: "Q1 SaaS Outreach — EU",      sent: 3180, delivered: 3021, opened: 1389, clicks: 362, replies: 224, positive: 102, conversions: 38 },
+        { name: "Agency Partnerships",          sent: 2600, delivered: 2470, opened: 1186, clicks: 298, replies: 189, positive: 88,  conversions: 32 },
+        { name: "Enterprise Warm Leads",        sent: 2500, delivered: 2375, opened: 1159, clicks: 243, replies: 160, positive: 66,  conversions: 23 },
+    ],
+};
+
+// =============================================================================
+// HELPER FUNCTIONS
+// =============================================================================
+function pct(num, denom) {
+    if (!denom) return 0;
+    return ((num / denom) * 100);
+}
+
+function fmtPct(num, denom) {
+    return pct(num, denom).toFixed(1) + '%';
+}
+
+function fmtNum(n) {
+    return n.toLocaleString();
+}
+
+// Chart.js global defaults
+Chart.defaults.color = '#8b8fa3';
+Chart.defaults.borderColor = 'rgba(42, 47, 69, 0.6)';
+Chart.defaults.font.family = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+Chart.defaults.font.size = 12;
+Chart.defaults.plugins.legend.labels.usePointStyle = true;
+Chart.defaults.plugins.legend.labels.pointStyleWidth = 8;
+Chart.defaults.plugins.legend.labels.padding = 16;
+Chart.defaults.plugins.tooltip.backgroundColor = '#1e2235';
+Chart.defaults.plugins.tooltip.borderColor = '#2a2f45';
+Chart.defaults.plugins.tooltip.borderWidth = 1;
+Chart.defaults.plugins.tooltip.cornerRadius = 8;
+Chart.defaults.plugins.tooltip.padding = 10;
+
+// =============================================================================
+// RENDER DASHBOARD
+// =============================================================================
+function render() {
+    const d = DATA.overall;
+
+    // Summary strip
+    document.getElementById('s-sent').textContent = fmtNum(d.sent);
+    document.getElementById('s-delivered').textContent = fmtNum(d.delivered);
+    document.getElementById('s-opened').textContent = fmtNum(d.opened);
+    document.getElementById('s-replied').textContent = fmtNum(d.replied);
+    document.getElementById('s-clicked').textContent = fmtNum(d.clicked);
+    document.getElementById('s-conversions').textContent = fmtNum(d.conversions);
+
+    // KPI Cards
+    document.getElementById('kpi-open-rate').textContent = fmtPct(d.opened, d.delivered);
+    document.getElementById('kpi-open-detail').textContent = `${fmtNum(d.opened)} opened of ${fmtNum(d.delivered)} delivered`;
+
+    document.getElementById('kpi-reply-rate').textContent = fmtPct(d.replied, d.delivered);
+    document.getElementById('kpi-reply-detail').textContent = `${fmtNum(d.replied)} replies of ${fmtNum(d.delivered)} delivered`;
+
+    document.getElementById('kpi-click-rate').textContent = fmtPct(d.clicked, d.delivered);
+    document.getElementById('kpi-click-detail').textContent = `${fmtNum(d.clicked)} clicks of ${fmtNum(d.delivered)} delivered`;
+
+    document.getElementById('kpi-conv-rate').textContent = fmtPct(d.conversions, d.replied);
+    document.getElementById('kpi-conv-detail').textContent = `${fmtNum(d.conversions)} conversions of ${fmtNum(d.replied)} replied`;
+
+    // Funnel
+    renderFunnel();
+
+    // Sentiment
+    renderSentiment();
+
+    // Time series charts
+    renderConversionsChart();
+    renderClicksChart();
+
+    // Audience
+    renderAudienceTable();
+    renderAudiencePie();
+
+    // Email Copies
+    renderCopiesTable();
+    renderCopiesBar();
+
+    // Steps
+    renderStepsChart();
+
+    // Deliverability
+    renderDeliverability();
+
+    // Day performance
+    renderDayChart();
+
+    // Campaign table
+    renderCampaignTable();
+}
+
+// ----- Engagement Funnel -----
+function renderFunnel() {
+    const d = DATA.overall;
+    const steps = [
+        { label: "Sent",        value: d.sent,        color: "var(--accent-blue)" },
+        { label: "Delivered",   value: d.delivered,    color: "var(--accent-cyan)" },
+        { label: "Opened",      value: d.opened,       color: "var(--accent-purple)" },
+        { label: "Clicked",     value: d.clicked,      color: "var(--accent-yellow)" },
+        { label: "Replied",     value: d.replied,       color: "var(--accent-green)" },
+        { label: "Conversions", value: d.conversions,  color: "var(--accent-orange)" },
+    ];
+
+    const container = document.getElementById('funnel-container');
+    const maxVal = steps[0].value;
+
+    container.innerHTML = steps.map((s, i) => {
+        const widthPct = Math.max((s.value / maxVal) * 100, 8);
+        const rate = i === 0 ? '100%' : fmtPct(s.value, steps[i - 1].value);
+        return `
+            <div class="funnel-step">
+                <div class="funnel-label">${s.label}</div>
+                <div class="funnel-bar-wrap">
+                    <div class="funnel-bar" style="width:${widthPct}%;background:${s.color};">${fmtNum(s.value)}</div>
+                </div>
+                <div class="funnel-rate">${rate}</div>
+            </div>
+        `;
+    }).join('');
+}
+
+// ----- Sentiment -----
+function renderSentiment() {
+    const d = DATA.overall;
+
+    // Pills
+    document.getElementById('sentiment-pills').innerHTML = `
+        <div class="pill pill-positive">
+            <div class="pill-count">${d.positiveReplies}</div>
+            <div class="pill-label">Positive</div>
+        </div>
+        <div class="pill pill-negative">
+            <div class="pill-count">${d.negativeReplies}</div>
+            <div class="pill-label">Negative</div>
+        </div>
+        <div class="pill pill-complex">
+            <div class="pill-count">${d.complexReplies}</div>
+            <div class="pill-label">Complex</div>
+        </div>
+    `;
+
+    // Ratio
+    const gcd = (a, b) => b === 0 ? a : gcd(b, a % b);
+    const g = gcd(d.positiveReplies, d.negativeReplies);
+    const ratioPos = (d.positiveReplies / g).toFixed(1);
+    const ratioNeg = (d.negativeReplies / g).toFixed(1);
+
+    document.getElementById('ratio-display').innerHTML = `
+        <div style="text-align:center;">
+            <div class="ratio-number text-green">${ratioPos}</div>
+            <div class="ratio-label" style="color:var(--text-muted);">Positive</div>
+        </div>
+        <div class="ratio-separator">:</div>
+        <div style="text-align:center;">
+            <div class="ratio-number text-red">${ratioNeg}</div>
+            <div class="ratio-label" style="color:var(--text-muted);">Negative</div>
+        </div>
+    `;
+
+    // Donut
+    new Chart(document.getElementById('chart-sentiment'), {
+        type: 'doughnut',
+        data: {
+            labels: ['Positive', 'Negative', 'Complex'],
+            datasets: [{
+                data: [d.positiveReplies, d.negativeReplies, d.complexReplies],
+                backgroundColor: ['#34d399', '#f87171', '#fbbf24'],
+                borderWidth: 0,
+                hoverOffset: 6,
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            cutout: '65%',
+            plugins: {
+                legend: { position: 'bottom', labels: { padding: 12 } },
+            }
+        }
+    });
+}
+
+// ----- Conversions Over Time -----
+function renderConversionsChart() {
+    const weeks = DATA.weekly;
+    new Chart(document.getElementById('chart-conversions-time'), {
+        type: 'bar',
+        data: {
+            labels: weeks.map(w => w.week),
+            datasets: [
+                {
+                    label: 'Conversions',
+                    data: weeks.map(w => w.conversions),
+                    backgroundColor: 'rgba(251, 146, 60, 0.7)',
+                    borderRadius: 6,
+                    borderSkipped: false,
+                    barThickness: 28,
+                },
+                {
+                    label: 'Replies',
+                    data: weeks.map(w => w.replies),
+                    backgroundColor: 'rgba(52, 211, 153, 0.25)',
+                    borderRadius: 6,
+                    borderSkipped: false,
+                    barThickness: 28,
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: { grid: { display: false } },
+                y: { beginAtZero: true, grid: { color: 'rgba(42, 47, 69, 0.4)' } }
+            },
+            plugins: { legend: { position: 'top' } }
+        }
+    });
+}
+
+// ----- Clicks by Week -----
+function renderClicksChart() {
+    const weeks = DATA.weekly;
+    new Chart(document.getElementById('chart-clicks-time'), {
+        type: 'line',
+        data: {
+            labels: weeks.map(w => w.week),
+            datasets: [
+                {
+                    label: 'Clicks',
+                    data: weeks.map(w => w.clicks),
+                    borderColor: '#fbbf24',
+                    backgroundColor: 'rgba(251, 191, 36, 0.08)',
+                    fill: true,
+                    tension: 0.4,
+                    pointRadius: 5,
+                    pointHoverRadius: 7,
+                    pointBackgroundColor: '#fbbf24',
+                    borderWidth: 2.5,
+                },
+                {
+                    label: 'Opens',
+                    data: weeks.map(w => w.opened),
+                    borderColor: '#a78bfa',
+                    backgroundColor: 'rgba(167, 139, 250, 0.06)',
+                    fill: true,
+                    tension: 0.4,
+                    pointRadius: 4,
+                    pointHoverRadius: 6,
+                    pointBackgroundColor: '#a78bfa',
+                    borderWidth: 2,
+                    borderDash: [5, 3],
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: { grid: { display: false } },
+                y: { beginAtZero: true, grid: { color: 'rgba(42, 47, 69, 0.4)' } }
+            },
+            plugins: { legend: { position: 'top' } }
+        }
+    });
+}
+
+// ----- Audience Table -----
+function renderAudienceTable() {
+    const table = document.getElementById('table-audience');
+    table.innerHTML = `
+        <thead>
+            <tr>
+                <th>Audience Segment</th>
+                <th>Sent</th>
+                <th>Open Rate</th>
+                <th>Reply Rate</th>
+                <th>Click Rate</th>
+                <th>Positive %</th>
+                <th>Conv. Rate</th>
+                <th>Conversions</th>
+            </tr>
+        </thead>
+        <tbody>
+            ${DATA.audiences.map(a => `
+                <tr>
+                    <td style="font-weight:600;">${a.name}</td>
+                    <td class="num">${fmtNum(a.sent)}</td>
+                    <td class="num">${fmtPct(a.opened, a.delivered)}</td>
+                    <td class="num">${fmtPct(a.replies, a.delivered)}</td>
+                    <td class="num">${fmtPct(a.clicks, a.delivered)}</td>
+                    <td class="num" style="color:var(--positive);">${fmtPct(a.positive, a.replies)}</td>
+                    <td class="num">${fmtPct(a.conversions, a.replies)}</td>
+                    <td class="num" style="font-weight:700;">${a.conversions}</td>
+                </tr>
+            `).join('')}
+        </tbody>
+    `;
+}
+
+// ----- Audience Pie -----
+function renderAudiencePie() {
+    new Chart(document.getElementById('chart-audience-pie'), {
+        type: 'doughnut',
+        data: {
+            labels: DATA.audiences.map(a => a.name),
+            datasets: [{
+                data: DATA.audiences.map(a => a.replies),
+                backgroundColor: ['#4f8df5', '#34d399', '#fbbf24', '#f87171', '#a78bfa'],
+                borderWidth: 0,
+                hoverOffset: 8,
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            cutout: '55%',
+            plugins: {
+                legend: { position: 'bottom', labels: { padding: 10, font: { size: 11 } } }
+            }
+        }
+    });
+}
+
+// ----- Email Copies Table -----
+function renderCopiesTable() {
+    const table = document.getElementById('table-copies');
+    const best = DATA.emailCopies.reduce((best, c) =>
+        pct(c.conversions, c.replies) > pct(best.conversions, best.replies) ? c : best
+    );
+
+    table.innerHTML = `
+        <thead>
+            <tr>
+                <th>Email Copy Variant</th>
+                <th>Sent</th>
+                <th>Open Rate</th>
+                <th>Reply Rate</th>
+                <th>Click Rate</th>
+                <th>Positive %</th>
+                <th>Conv. Rate</th>
+                <th>Winner</th>
+            </tr>
+        </thead>
+        <tbody>
+            ${DATA.emailCopies.map(c => {
+                const isBest = c === best;
+                return `
+                <tr style="${isBest ? 'background:rgba(52,211,153,0.05);' : ''}">
+                    <td style="font-weight:600;">${c.name}</td>
+                    <td class="num">${fmtNum(c.sent)}</td>
+                    <td class="num">${fmtPct(c.opened, c.delivered)}</td>
+                    <td class="num">${fmtPct(c.replies, c.delivered)}</td>
+                    <td class="num">${fmtPct(c.clicks, c.delivered)}</td>
+                    <td class="num" style="color:var(--positive);">${fmtPct(c.positive, c.replies)}</td>
+                    <td class="num">${fmtPct(c.conversions, c.replies)}</td>
+                    <td>${isBest ? '<span style="color:var(--accent-green);font-weight:700;">&#9733; Best</span>' : ''}</td>
+                </tr>
+            `}).join('')}
+        </tbody>
+    `;
+}
+
+// ----- Copies Bar Chart -----
+function renderCopiesBar() {
+    const copies = DATA.emailCopies;
+    new Chart(document.getElementById('chart-copies-bar'), {
+        type: 'bar',
+        data: {
+            labels: copies.map(c => c.name.split(' — ')[1] || c.name),
+            datasets: [
+                {
+                    label: 'Open Rate %',
+                    data: copies.map(c => pct(c.opened, c.delivered).toFixed(1)),
+                    backgroundColor: 'rgba(167, 139, 250, 0.6)',
+                    borderRadius: 6,
+                    borderSkipped: false,
+                },
+                {
+                    label: 'Reply Rate %',
+                    data: copies.map(c => pct(c.replies, c.delivered).toFixed(1)),
+                    backgroundColor: 'rgba(52, 211, 153, 0.6)',
+                    borderRadius: 6,
+                    borderSkipped: false,
+                },
+                {
+                    label: 'Conversion Rate %',
+                    data: copies.map(c => pct(c.conversions, c.replies).toFixed(1)),
+                    backgroundColor: 'rgba(251, 146, 60, 0.6)',
+                    borderRadius: 6,
+                    borderSkipped: false,
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: { grid: { display: false } },
+                y: { beginAtZero: true, grid: { color: 'rgba(42, 47, 69, 0.4)' }, ticks: { callback: v => v + '%' } }
+            },
+            plugins: { legend: { position: 'top' } }
+        }
+    });
+}
+
+// ----- Sequence Steps -----
+function renderStepsChart() {
+    const steps = DATA.steps;
+    new Chart(document.getElementById('chart-steps'), {
+        type: 'bar',
+        data: {
+            labels: steps.map(s => s.step.split(' — ')[1] || s.step),
+            datasets: [
+                {
+                    label: 'Sent',
+                    data: steps.map(s => s.sent),
+                    backgroundColor: 'rgba(79, 141, 245, 0.5)',
+                    borderRadius: 4,
+                },
+                {
+                    label: 'Opened',
+                    data: steps.map(s => s.opened),
+                    backgroundColor: 'rgba(167, 139, 250, 0.5)',
+                    borderRadius: 4,
+                },
+                {
+                    label: 'Replied',
+                    data: steps.map(s => s.replied),
+                    backgroundColor: 'rgba(52, 211, 153, 0.5)',
+                    borderRadius: 4,
+                },
+                {
+                    label: 'Conversions',
+                    data: steps.map(s => s.conversions),
+                    backgroundColor: 'rgba(251, 146, 60, 0.5)',
+                    borderRadius: 4,
+                },
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            indexAxis: 'y',
+            scales: {
+                x: { beginAtZero: true, grid: { color: 'rgba(42, 47, 69, 0.4)' } },
+                y: { grid: { display: false } }
+            },
+            plugins: { legend: { position: 'top' } }
+        }
+    });
+}
+
+// ----- Deliverability -----
+function renderDeliverability() {
+    const d = DATA.overall;
+    const deliveryRate = pct(d.delivered, d.sent);
+    const bounceRate = pct(d.bounced, d.sent);
+    const unsubRate = pct(d.unsubscribed, d.delivered);
+    const spamRate = pct(d.spamReports, d.delivered);
+
+    const metrics = [
+        { label: "Delivery Rate", value: deliveryRate, color: "#34d399", status: deliveryRate > 95 ? "Excellent" : deliveryRate > 90 ? "Good" : "Needs attention" },
+        { label: "Bounce Rate", value: bounceRate, color: bounceRate < 3 ? "#34d399" : bounceRate < 5 ? "#fbbf24" : "#f87171", status: bounceRate < 3 ? "Healthy" : bounceRate < 5 ? "Monitor" : "High" },
+        { label: "Unsubscribe Rate", value: unsubRate, color: unsubRate < 1 ? "#34d399" : unsubRate < 2 ? "#fbbf24" : "#f87171", status: unsubRate < 1 ? "Normal" : "Monitor" },
+        { label: "Spam Reports", value: spamRate, color: spamRate < 0.1 ? "#34d399" : "#f87171", status: spamRate < 0.1 ? "Safe" : "Warning" },
+    ];
+
+    document.getElementById('deliverability-stats').innerHTML = metrics.map(m => `
+        <div style="margin-bottom: 20px;">
+            <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+                <span style="font-size:13px;color:var(--text-secondary);">${m.label}</span>
+                <span style="font-size:13px;font-weight:700;">${m.value.toFixed(2)}%</span>
+            </div>
+            <div class="progress-bar">
+                <div class="progress-fill" style="width:${Math.min(m.value, 100)}%;background:${m.color};"></div>
+            </div>
+            <div style="font-size:11px;margin-top:4px;color:${m.color};font-weight:600;">${m.status}</div>
+        </div>
+    `).join('');
+}
+
+// ----- Day Performance -----
+function renderDayChart() {
+    const days = DATA.dayPerformance;
+    new Chart(document.getElementById('chart-days'), {
+        type: 'bar',
+        data: {
+            labels: days.map(d => d.day),
+            datasets: [{
+                label: 'Reply Rate %',
+                data: days.map(d => d.replyRate),
+                backgroundColor: days.map(d =>
+                    d.replyRate > 8.5 ? 'rgba(52, 211, 153, 0.6)' :
+                    d.replyRate > 6 ? 'rgba(79, 141, 245, 0.5)' :
+                    'rgba(248, 113, 113, 0.4)'
+                ),
+                borderRadius: 6,
+                borderSkipped: false,
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: { grid: { display: false } },
+                y: { beginAtZero: true, grid: { color: 'rgba(42, 47, 69, 0.4)' }, ticks: { callback: v => v + '%' } }
+            },
+            plugins: { legend: { display: false } }
+        }
+    });
+}
+
+// ----- Campaign Breakdown Table -----
+function renderCampaignTable() {
+    const table = document.getElementById('table-campaigns');
+    table.innerHTML = `
+        <thead>
+            <tr>
+                <th>Campaign</th>
+                <th>Sent</th>
+                <th>Delivered</th>
+                <th>Open Rate</th>
+                <th>Click Rate</th>
+                <th>Reply Rate</th>
+                <th>Positive Replies</th>
+                <th>Conversions</th>
+                <th>Conv. Rate</th>
+            </tr>
+        </thead>
+        <tbody>
+            ${DATA.campaigns.map(c => `
+                <tr>
+                    <td style="font-weight:600;">${c.name}</td>
+                    <td class="num">${fmtNum(c.sent)}</td>
+                    <td class="num">${fmtNum(c.delivered)}</td>
+                    <td class="num">${fmtPct(c.opened, c.delivered)}</td>
+                    <td class="num">${fmtPct(c.clicks, c.delivered)}</td>
+                    <td class="num">${fmtPct(c.replies, c.delivered)}</td>
+                    <td class="num" style="color:var(--positive);">${c.positive}</td>
+                    <td class="num" style="font-weight:700;">${c.conversions}</td>
+                    <td class="num">${fmtPct(c.conversions, c.replies)}</td>
+                </tr>
+            `).join('')}
+        </tbody>
+    `;
+}
+
+// Initialize
+document.addEventListener('DOMContentLoaded', render);
+</script>
+</body>
+</html>
