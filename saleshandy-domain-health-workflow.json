@@ -1,0 +1,168 @@
+{
+  "name": "Saleshandy Domain Health & Campaign Report",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "trigger-1",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const API_KEY = \"YOUR_API_KEY\";\nconst BASE_URL = \"https://open-api.saleshandy.com/v1\";\n\n// Step 1: Fetch all sequences\nlet sequences = [];\ntry {\n  const seqResponse = await this.helpers.httpRequest({\n    method: \"GET\",\n    url: `${BASE_URL}/sequences`,\n    headers: {\n      \"x-api-key\": API_KEY,\n    },\n    json: true,\n  });\n  sequences = seqResponse.data || seqResponse.sequences || seqResponse || [];\n} catch (err) {\n  sequences = [];\n  console.log(\"Sequences fetch error:\", err.message);\n}\n\n// Step 2: Paginate through all email accounts\nconst allEmails = [];\nlet page = 1;\nlet hasMore = true;\n\nwhile (hasMore) {\n  try {\n    const response = await this.helpers.httpRequest({\n      method: \"GET\",\n      url: `${BASE_URL}/email-accounts`,\n      qs: {\n        page,\n        limit: 100,\n      },\n      headers: {\n        \"x-api-key\": API_KEY,\n      },\n      json: true,\n    });\n\n    const accounts = response.data || response.emailAccounts || [];\n\n    if (!Array.isArray(accounts) || accounts.length === 0) {\n      hasMore = false;\n      break;\n    }\n\n    allEmails.push(...accounts);\n    hasMore = accounts.length === 100;\n    page++;\n  } catch (err) {\n    console.log(`Email accounts fetch error on page ${page}:`, err.message);\n    hasMore = false;\n  }\n}\n\n// Step 3: Build domain map with health scores\nconst domainMap = {};\n\nfor (const account of allEmails) {\n  const email = account.email || account.fromEmail || \"\";\n  const domain = email.split(\"@\")[1];\n\n  if (!domain) continue;\n\n  if (!domainMap[domain]) {\n    domainMap[domain] = {\n      accounts: [],\n      totalAccounts: 0,\n      avgHealthScore: 0,\n      healthScores: [],\n    };\n  }\n\n  const healthScore = account.healthScore\n    || account.health_score\n    || account.emailHealth\n    || 0;\n\n  domainMap[domain].accounts.push({\n    email: email,\n    healthScore: healthScore,\n    fromName: account.fromName || account.from_name || \"\",\n    status: account.status || \"unknown\",\n    dailyLimit: account.dailyLimit || account.daily_limit || null,\n    sentToday: account.sentToday || account.sent_today || null,\n  });\n\n  domainMap[domain].totalAccounts++;\n  domainMap[domain].healthScores.push(healthScore);\n}\n\n// Calculate averages per domain\nfor (const domain of Object.keys(domainMap)) {\n  const scores = domainMap[domain].healthScores;\n  domainMap[domain].avgHealthScore = scores.length > 0\n    ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length)\n    : 0;\n  delete domainMap[domain].healthScores;\n}\n\n// Step 4: Build summary\nconst allHealthScores = allEmails\n  .map(e => e.healthScore || e.health_score || 0)\n  .filter(s => s > 0);\n\nconst avgOverallHealth = allHealthScores.length > 0\n  ? Math.round(allHealthScores.reduce((a, b) => a + b, 0) / allHealthScores.length)\n  : 0;\n\nconst domainSummary = Object.entries(domainMap)\n  .map(([domain, data]) => ({\n    domain,\n    totalAccounts: data.totalAccounts,\n    avgHealthScore: data.avgHealthScore,\n    status: data.avgHealthScore >= 90 ? \"excellent\"\n      : data.avgHealthScore >= 80 ? \"good\"\n      : data.avgHealthScore >= 70 ? \"warning\"\n      : \"critical\",\n  }))\n  .sort((a, b) => b.avgHealthScore - a.avgHealthScore);\n\nreturn [\n  {\n    json: {\n      reportDate: new Date().toISOString(),\n      totalEmailAccounts: allEmails.length,\n      totalDomains: Object.keys(domainMap).length,\n      avgOverallHealthScore: avgOverallHealth,\n      totalSequences: Array.isArray(sequences) ? sequences.length : 0,\n      sequences: sequences,\n      domainSummary: domainSummary,\n      domainMap: domainMap,\n    },\n  },\n];"
+      },
+      "id": "code-fetch-accounts",
+      "name": "Fetch Accounts & Build Domain Map",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const input = $input.first().json;\nconst domainMap = input.domainMap || {};\nconst sequences = input.sequences || [];\n\n// Build per-sequence stats\nconst sequenceStats = [];\nfor (const seq of sequences) {\n  sequenceStats.push({\n    id: seq.id || seq.sequenceId || null,\n    name: seq.name || seq.sequenceName || \"Unknown\",\n    status: seq.status || \"unknown\",\n    totalProspects: seq.totalProspects || seq.total_prospects || 0,\n    sent: seq.sent || seq.totalSent || 0,\n    opened: seq.opened || seq.totalOpened || 0,\n    replied: seq.replied || seq.totalReplied || 0,\n    bounced: seq.bounced || seq.totalBounced || 0,\n    openRate: seq.sent > 0\n      ? ((seq.opened || seq.totalOpened || 0) / (seq.sent || seq.totalSent || 1) * 100).toFixed(1) + \"%\"\n      : \"0.0%\",\n    replyRate: seq.sent > 0\n      ? ((seq.replied || seq.totalReplied || 0) / (seq.sent || seq.totalSent || 1) * 100).toFixed(1) + \"%\"\n      : \"0.0%\",\n    bounceRate: seq.sent > 0\n      ? ((seq.bounced || seq.totalBounced || 0) / (seq.sent || seq.totalSent || 1) * 100).toFixed(1) + \"%\"\n      : \"0.0%\",\n  });\n}\n\n// Flag domains needing attention\nconst flaggedDomains = input.domainSummary\n  .filter(d => d.status === \"warning\" || d.status === \"critical\")\n  .map(d => ({\n    domain: d.domain,\n    avgHealthScore: d.avgHealthScore,\n    status: d.status,\n    accountCount: d.totalAccounts,\n    action: d.status === \"critical\"\n      ? \"PAUSE sending immediately — health score below 70\"\n      : \"MONITOR closely — health score between 70-79\",\n  }));\n\n// Top performing domains\nconst topDomains = input.domainSummary\n  .filter(d => d.status === \"excellent\" || d.status === \"good\")\n  .slice(0, 5)\n  .map(d => ({\n    domain: d.domain,\n    avgHealthScore: d.avgHealthScore,\n    status: d.status,\n    accountCount: d.totalAccounts,\n    action: d.avgHealthScore >= 90\n      ? \"Safe to increase volume 10-15%\"\n      : \"Maintain current volume\",\n  }));\n\nreturn [\n  {\n    json: {\n      report: {\n        title: \"Domain Health & Campaign Report\",\n        generatedAt: new Date().toISOString(),\n        summary: {\n          totalEmailAccounts: input.totalEmailAccounts,\n          totalDomains: input.totalDomains,\n          avgOverallHealthScore: input.avgOverallHealthScore,\n          totalSequences: input.totalSequences,\n          domainsNeedingAttention: flaggedDomains.length,\n          healthyDomains: input.domainSummary.filter(d => d.status === \"excellent\" || d.status === \"good\").length,\n        },\n        domainHealth: input.domainSummary,\n        flaggedDomains: flaggedDomains,\n        topPerformers: topDomains,\n        campaignStats: sequenceStats,\n        domainDetail: domainMap,\n      },\n    },\n  },\n];"
+      },
+      "id": "code-build-report",
+      "name": "Build Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 300]
+    },
+    {
+      "parameters": {
+        "channel": "#domain-alerts",
+        "text": "=*Domain Health & Campaign Report*\n_Generated: {{ $json.report.generatedAt }}_\n\n*Summary*\n• Total Domains: {{ $json.report.summary.totalDomains }}\n• Total Email Accounts: {{ $json.report.summary.totalEmailAccounts }}\n• Avg Health Score: {{ $json.report.summary.avgOverallHealthScore }}/100\n• Active Sequences: {{ $json.report.summary.totalSequences }}\n• Domains Needing Attention: {{ $json.report.summary.domainsNeedingAttention }}\n• Healthy Domains: {{ $json.report.summary.healthyDomains }}",
+        "otherOptions": {}
+      },
+      "id": "slack-post",
+      "name": "Post to Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [940, 200],
+      "credentials": {
+        "slackApi": {
+          "id": "YOUR_SLACK_CREDENTIAL_ID",
+          "name": "Slack Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-flagged",
+              "leftValue": "={{ $json.report.summary.domainsNeedingAttention }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-flagged",
+      "name": "Has Flagged Domains?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [940, 420]
+    },
+    {
+      "parameters": {
+        "channel": "#domain-alerts",
+        "text": "=:warning: *Domains Needing Attention*\n\n{{ $json.report.flaggedDomains.map(d => `• *${d.domain}* — Score: ${d.avgHealthScore}/100 (${d.status.toUpperCase()})\\n  → ${d.action}`).join('\\n') }}",
+        "otherOptions": {}
+      },
+      "id": "slack-warning",
+      "name": "Post Warning to Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1180, 380],
+      "credentials": {
+        "slackApi": {
+          "id": "YOUR_SLACK_CREDENTIAL_ID",
+          "name": "Slack Account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Fetch Accounts & Build Domain Map",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Accounts & Build Domain Map": {
+      "main": [
+        [
+          {
+            "node": "Build Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Report": {
+      "main": [
+        [
+          {
+            "node": "Post to Slack",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Has Flagged Domains?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Flagged Domains?": {
+      "main": [
+        [
+          {
+            "node": "Post Warning to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "domain-health",
+      "id": "tag-1"
+    },
+    {
+      "name": "saleshandy",
+      "id": "tag-2"
+    }
+  ],
+  "triggerCount": 1
+}
