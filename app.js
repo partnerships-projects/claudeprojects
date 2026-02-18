@@ -26,6 +26,15 @@ const CONFIG = {
         'COPY OF EXAMPLE!DO NOT EDIT ONLY DUPLICATE!',
     ],
 
+    // Keywords that identify summary / total rows (case-insensitive).
+    // Any row whose MONTH or DATE cell matches one of these is skipped.
+    SUMMARY_ROW_KEYWORDS: [
+        'TOTAL', 'TOTALS', 'GRAND TOTAL', 'GRAND TOTALS',
+        'SUM', 'SUBTOTAL', 'SUB TOTAL', 'SUB-TOTAL',
+        'AVERAGE', 'AVG', 'MEAN',
+        'OVERALL', 'SUMMARY', 'AGGREGATE',
+    ],
+
     // Column name normalization map (uppercase key -> internal field).
     // Only columns A:V are processed; duplicates after V are never seen.
     COLUMN_MAP: {
@@ -33,28 +42,73 @@ const CONFIG = {
         'DATE':             'date',
         'HOUR':             'hour',
         'HOUR SENT':        'hour',
+        'HOURS':            'hour',
         'SENT EMAIL':       'sentEmail',
         'EMAIL (USED)':     'sentEmail',
+        'EMAIL USED':       'sentEmail',
         'EMAIL SENT':       'emailSent',
         '#EMAIL SENT':      'emailSent',
         '# EMAIL SENT':     'emailSent',
+        'EMAILS SENT':      'emailSent',
+        '#EMAILS SENT':     'emailSent',
+        '# EMAILS SENT':    'emailSent',
+        'TOTAL EMAILS SENT':'emailSent',
+        'NO. OF EMAILS SENT':'emailSent',
         'TARGET AUDIENCE':  'targetAudience',
+        'AUDIENCE':         'targetAudience',
         'SUBJECT LINE':     'subjectLine',
+        'SUBJECT':          'subjectLine',
         'COPY USED':        'copyUsed',
+        'COPY':             'copyUsed',
         'SERVERS':          'servers',
+        'SERVER':           'servers',
         'POSITIVE':         'positive',
+        'POSITIVES':        'positive',
+        '#POSITIVE':        'positive',
+        '# POSITIVE':       'positive',
+        '#POSITIVES':       'positive',
+        '# POSITIVES':      'positive',
         'NEGATIVE':         'negative',
+        'NEGATIVES':        'negative',
+        '#NEGATIVE':        'negative',
+        '# NEGATIVE':       'negative',
+        '#NEGATIVES':       'negative',
+        '# NEGATIVES':      'negative',
         'COMPLEX':          'complex',
+        '#COMPLEX':         'complex',
+        '# COMPLEX':        'complex',
         'CONVERTED':        'converted',
+        'CONVERSIONS':      'converted',
+        'CONVERSION':       'converted',
+        '#CONVERTED':       'converted',
+        '# CONVERTED':      'converted',
+        '#CONVERSIONS':     'converted',
+        '# CONVERSIONS':    'converted',
         'OPEN RATE':        'openRate',
+        'OPEN %':           'openRate',
+        'OPEN RATE %':      'openRate',
         'REPLY RATE':       'replyRate',
+        'REPLY %':          'replyRate',
+        'REPLY RATE %':     'replyRate',
         'OPENS':            'opens',
+        'OPEN':             'opens',
+        '#OPENS':           'opens',
+        '# OPENS':          'opens',
+        'TOTAL OPENS':      'opens',
         'REPLIES':          'replies',
+        'REPLY':            'replies',
+        '#REPLIES':         'replies',
+        '# REPLIES':        'replies',
+        'TOTAL REPLIES':    'replies',
         'CLIENT NAME':      'clientName',
+        'CLIENT':           'clientName',
         'TEAM LEADER':      'teamLeader',
+        'TEAM LEAD':        'teamLeader',
+        'TL':               'teamLeader',
         'CS':               'cs',
         'TYPE':             'type',
         'GOAL':             'goal',
+        'GOALS':            'goal',
     },
 
     // Palette for clients/segments
@@ -238,12 +292,22 @@ const SheetsAPI = {
 // 4. DATA ENGINE
 // ============================================================================
 const DataEngine = {
+    // Normalize a raw header string for matching against COLUMN_MAP.
+    // Strips non-breaking spaces, collapses whitespace, trims, uppercases.
+    normalizeHeader(raw) {
+        return String(raw || '')
+            .replace(/[\u00A0\u200B\u2003\u2002\u2009]/g, ' ')   // special spaces -> normal space
+            .replace(/\s+/g, ' ')                                  // collapse runs of whitespace
+            .trim()
+            .toUpperCase();
+    },
+
     // Map raw headers to internal field names (capped to MAX_DATA_COLUMNS)
     mapHeaders(rawHeaders) {
         const maxCols = Math.min(rawHeaders.length, CONFIG.MAX_DATA_COLUMNS);
         const mapped = [];
         for (let i = 0; i < maxCols; i++) {
-            const upper = String(rawHeaders[i] || '').trim().toUpperCase();
+            const upper = this.normalizeHeader(rawHeaders[i]);
             mapped.push(CONFIG.COLUMN_MAP[upper] || null);
         }
         return mapped;
@@ -255,6 +319,13 @@ const DataEngine = {
         const mapped = this.mapHeaders(rawHeaders);
         const recognized = mapped.filter(f => f !== null).length;
         return recognized >= CONFIG.MIN_VALID_HEADERS;
+    },
+
+    // Check if a value looks like a summary/total row marker
+    _isSummaryValue(val) {
+        if (val === null || val === undefined || val === '') return false;
+        const s = String(val).trim().toUpperCase();
+        return CONFIG.SUMMARY_ROW_KEYWORDS.some(kw => s === kw || s.includes(kw));
     },
 
     // Parse a single sheet's raw data into typed records
@@ -271,11 +342,51 @@ const DataEngine = {
 
         const fieldMap = this.mapHeaders(rawHeaders);
         const colCount = fieldMap.length; // already capped to MAX_DATA_COLUMNS
+
+        // --- Diagnostic: log column mapping for this sheet ---
+        const maxCols = Math.min(rawHeaders.length, CONFIG.MAX_DATA_COLUMNS);
+        const mappedCols = [];
+        const unmappedCols = [];
+        for (let i = 0; i < maxCols; i++) {
+            const hdr = this.normalizeHeader(rawHeaders[i]);
+            if (!hdr) continue;
+            if (fieldMap[i]) {
+                mappedCols.push(`[${i}] "${hdr}" -> ${fieldMap[i]}`);
+            } else {
+                unmappedCols.push(`[${i}] "${hdr}"`);
+            }
+        }
+        console.log(`[Dashboard] Sheet "${sheetName}" mapped columns: ${mappedCols.join(', ')}`);
+        if (unmappedCols.length > 0) {
+            console.warn(`[Dashboard] Sheet "${sheetName}" UNMAPPED columns: ${unmappedCols.join(', ')}`);
+        }
+
+        // --- Find which field indices correspond to MONTH and DATE for summary-row detection ---
+        const monthIdx = fieldMap.indexOf('month');
+        const dateIdx = fieldMap.indexOf('date');
+
         const records = [];
+        let skippedSummaryRows = 0;
 
         for (let i = 1; i < rawRows.length; i++) {
             const row = rawRows[i];
             if (!row || row.length === 0) continue;
+
+            // --- Summary / total row detection ---
+            // Check if the MONTH or DATE cell contains a summary keyword (e.g. "Total", "Grand Total")
+            const monthVal = monthIdx >= 0 ? row[monthIdx] : null;
+            const dateVal = dateIdx >= 0 ? row[dateIdx] : null;
+            if (this._isSummaryValue(monthVal) || this._isSummaryValue(dateVal)) {
+                skippedSummaryRows++;
+                continue;
+            }
+
+            // Also check the very first cell of the row (column A), since some sheets
+            // put "TOTAL" in the first column regardless of what that column is.
+            if (row[0] !== undefined && row[0] !== null && this._isSummaryValue(row[0])) {
+                skippedSummaryRows++;
+                continue;
+            }
 
             const record = { _sheet: sheetName };
             let hasData = false;
@@ -316,6 +427,19 @@ const DataEngine = {
             record._month = (record.month || '').toString().trim();
 
             records.push(record);
+        }
+
+        // --- Diagnostic: per-sheet summary ---
+        if (skippedSummaryRows > 0) {
+            console.log(`[Dashboard] Sheet "${sheetName}": skipped ${skippedSummaryRows} summary/total row(s)`);
+        }
+        if (records.length > 0) {
+            const totSent = records.reduce((s, r) => s + r._emailSent, 0);
+            const totOpens = records.reduce((s, r) => s + r._opens, 0);
+            const totReplies = records.reduce((s, r) => s + r._replies, 0);
+            const totPositive = records.reduce((s, r) => s + r._positive, 0);
+            const totConverted = records.reduce((s, r) => s + r._converted, 0);
+            console.log(`[Dashboard] Sheet "${sheetName}": ${records.length} records | Sent=${totSent}, Opens=${totOpens}, Replies=${totReplies}, Positive=${totPositive}, Converted=${totConverted}`);
         }
 
         return records;
