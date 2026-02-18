@@ -16,6 +16,16 @@ const CONFIG = {
     // Sheets with fewer matches (e.g. summary/config tabs) are skipped automatically.
     MIN_VALID_HEADERS: 5,
 
+    // Sheet names to always exclude (case-insensitive substring match).
+    // These are known non-client sheets like dashboards, templates, and config tabs.
+    EXCLUDED_SHEETS: [
+        'MASTER DATA SHEE',
+        'CLIENT INFO',
+        'CLIENT MONTHLY DASHBOARD',
+        'CLIENT DAILY DASHBOARD',
+        'COPY OF EXAMPLE!DO NOT EDIT ONLY DUPLICATE!',
+    ],
+
     // Column name normalization map (uppercase key -> internal field).
     // Only columns A:V are processed; duplicates after V are never seen.
     COLUMN_MAP: {
@@ -183,12 +193,24 @@ const SheetsAPI = {
     async fetchAll(apiKey, spreadsheetId, onProgress) {
         // 1. Get all sheet names
         const meta = await this.getSpreadsheetMeta(apiKey, spreadsheetId);
-        const sheetNames = meta.sheets.map(s => s.properties.title);
+        const allSheetNames = meta.sheets.map(s => s.properties.title);
         const spreadsheetTitle = meta.properties?.title || 'Untitled';
+
+        // 2. Filter out known non-client sheets before fetching any data
+        const excluded = CONFIG.EXCLUDED_SHEETS.map(s => s.toUpperCase());
+        const sheetNames = allSheetNames.filter(name => {
+            const upper = name.toUpperCase().trim();
+            return !excluded.some(ex => upper === ex || upper.includes(ex));
+        });
+
+        const skipped = allSheetNames.length - sheetNames.length;
+        if (skipped > 0) {
+            console.log(`[Dashboard] Excluded ${skipped} non-client sheet(s) by name: ${allSheetNames.filter(n => !sheetNames.includes(n)).join(', ')}`);
+        }
 
         if (onProgress) onProgress({ phase: 'sheets', total: sheetNames.length, done: 0 });
 
-        // 2. Fetch data from each sheet in parallel (batches of 5)
+        // 3. Fetch data from each client sheet in parallel (batches of 5)
         const allSheetData = {};
         const batchSize = 5;
         let done = 0;
