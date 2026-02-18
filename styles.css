@@ -350,7 +350,15 @@ a:hover {
 
 .top-bar-right {
     display: flex;
+    align-items: center;
     gap: 8px;
+}
+
+.auto-refresh-time {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-right: 4px;
+    white-space: nowrap;
 }
 
 .top-bar-right .btn svg {

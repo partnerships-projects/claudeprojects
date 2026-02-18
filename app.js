@@ -12,6 +12,10 @@ const CONFIG = {
     MAX_DATA_COLUMNS: 22,
     DATA_RANGE_SUFFIX: '!A:V',
 
+    // Auto-refresh interval in milliseconds (30 seconds).
+    // Set to 0 to disable auto-refresh.
+    AUTO_REFRESH_INTERVAL: 30_000,
+
     // Minimum number of recognized headers a sheet must have to be treated as a client sheet.
     // Sheets with fewer matches (e.g. summary/config tabs) are skipped automatically.
     MIN_VALID_HEADERS: 5,
@@ -1917,6 +1921,10 @@ async function loadData(apiKey, spreadsheetId) {
         renderFilterBar();
         renderDashboard();
 
+        // Start auto-refresh polling
+        AutoRefresh.setFingerprint(allRecords, clientMap);
+        AutoRefresh.start();
+
         showToast(`Loaded ${fmtNum(allRecords.length)} records from ${Object.keys(clientMap).length} client sheets`, 'success');
 
     } catch (err) {
@@ -1931,6 +1939,104 @@ async function loadData(apiKey, spreadsheetId) {
         Store.update({ loading: false, error: err.message });
     }
 }
+
+// ============================================================================
+// 27. AUTO-REFRESH ENGINE
+// ============================================================================
+const AutoRefresh = {
+    _timerId: null,
+    _lastFingerprint: null,
+
+    // Build a lightweight fingerprint of the data to detect changes.
+    // Uses total record count + per-sheet counts + sum of key metrics.
+    fingerprint(allRecords, clientMap) {
+        const parts = [allRecords.length];
+        for (const [name, count] of Object.entries(clientMap).sort()) {
+            parts.push(`${name}:${count}`);
+        }
+        // Include metric sums so value-only changes are detected
+        const sent = allRecords.reduce((s, r) => s + r._emailSent, 0);
+        const replies = allRecords.reduce((s, r) => s + r._replies, 0);
+        const converted = allRecords.reduce((s, r) => s + r._converted, 0);
+        parts.push(`s${sent}r${replies}c${converted}`);
+        return parts.join('|');
+    },
+
+    // Save fingerprint for the current data set
+    setFingerprint(allRecords, clientMap) {
+        this._lastFingerprint = this.fingerprint(allRecords, clientMap);
+    },
+
+    // Silently fetch fresh data in the background.
+    // Only updates UI if data actually changed. No loading overlay.
+    async silentRefresh() {
+        const { apiKey, spreadsheetId } = Store.state;
+        if (!apiKey || !spreadsheetId) return;
+
+        try {
+            const { spreadsheetTitle, sheetNames, allSheetData } = await SheetsAPI.fetchAll(
+                apiKey, spreadsheetId, null  // no progress callback
+            );
+            const { allRecords, clientMap } = DataEngine.parseAll(allSheetData);
+            const newFingerprint = this.fingerprint(allRecords, clientMap);
+
+            // Update "last checked" timestamp
+            this._updateStatusTime();
+
+            // Only update UI if something changed
+            if (newFingerprint === this._lastFingerprint) {
+                console.log('[AutoRefresh] No changes detected');
+                return;
+            }
+
+            console.log('[AutoRefresh] Changes detected — updating dashboard');
+            this._lastFingerprint = newFingerprint;
+
+            const filterOptions = DataEngine.getFilterOptions(allRecords, clientMap);
+            const { currentView, currentClient, filters } = Store.state;
+
+            Store.update({
+                spreadsheetTitle,
+                sheetNames,
+                allRecords,
+                filteredRecords: FilterEngine.apply(allRecords, filters, currentView, currentClient),
+                clientMap,
+                filterOptions,
+                dataLoaded: true,
+            });
+
+            renderNavigation();
+            renderFilterBar();
+            renderDashboard();
+
+            showToast('Data updated automatically', 'success');
+        } catch (err) {
+            console.warn('[AutoRefresh] Silent refresh failed:', err.message);
+        }
+    },
+
+    _updateStatusTime() {
+        const el = document.getElementById('auto-refresh-time');
+        if (el) {
+            const now = new Date();
+            el.textContent = `Updated ${now.toLocaleTimeString()}`;
+        }
+    },
+
+    start() {
+        this.stop();
+        if (CONFIG.AUTO_REFRESH_INTERVAL <= 0) return;
+        console.log(`[AutoRefresh] Polling every ${CONFIG.AUTO_REFRESH_INTERVAL / 1000}s`);
+        this._timerId = setInterval(() => this.silentRefresh(), CONFIG.AUTO_REFRESH_INTERVAL);
+    },
+
+    stop() {
+        if (this._timerId) {
+            clearInterval(this._timerId);
+            this._timerId = null;
+        }
+    },
+};
 
 function init() {
     setupChartDefaults();
