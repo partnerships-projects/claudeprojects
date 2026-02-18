@@ -1,0 +1,164 @@
+{
+  "name": "Slack Domain Health Monitor",
+  "nodes": [
+    {
+      "parameters": {
+        "trigger": ["message"],
+        "channelId": ["YOUR_CHANNEL_ID"],
+        "options": {}
+      },
+      "id": "slack-trigger",
+      "name": "Slack Trigger",
+      "type": "n8n-nodes-base.slackTrigger",
+      "typeVersion": 1,
+      "position": [220, 300],
+      "credentials": {
+        "slackApi": {
+          "id": "YOUR_SLACK_CREDENTIAL_ID",
+          "name": "new newest slack"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// Extract Domains — parses Gappie's Postmaster Notification\n// ============================================================\n// Expected message format (multi-line, with emoji):\n//\n//   🔔 Postmaster Notification:\n//   🕐 Date and Time: Feb 17nd, 2026, 8:38 am\n//   🔍 Changes detected in your monitored domains:\n//\n//   🔹 withpersonaspace.com\n//   – 🟢 Spam Rate decreased to 0.0%\n//\n//   🔹 personaforcreators.com\n//   – 🔴 Spam Rate increased to 21.4%\n//\n// ============================================================\n\nconst text = items[0].json.text || items[0].json.message?.text || \"\";\n\n// Only process Postmaster Notification messages (prevents bot reply loop)\nif (!text.includes(\"Postmaster Notification\")) {\n  return [{ json: { flaggedDomains: [], skipped: true, reason: \"Not a Postmaster Notification\" } }];\n}\n\nconst lines = text.split(\"\\n\").map(l => l.trim()).filter(l => l.length > 0);\nconst domains = [];\n\nfor (let i = 0; i < lines.length; i++) {\n  // Match lines ending with a domain (strips leading emoji/whitespace/punctuation)\n  const domainMatch = lines[i].match(/([a-zA-Z0-9][a-zA-Z0-9\\-]*\\.)+[a-zA-Z]{2,}$/);\n  if (domainMatch && i + 1 < lines.length) {\n    const domain = domainMatch[0].toLowerCase();\n    // Next non-empty line should contain \"Spam Rate increased/decreased to X.X%\"\n    const spamMatch = lines[i + 1].match(/Spam\\s+Rate\\s+(?:decreased|increased)\\s+to\\s+([\\d.]+)%/i);\n    if (spamMatch) {\n      domains.push({\n        domain: domain,\n        spamRate: parseFloat(spamMatch[1]),\n        direction: lines[i + 1].toLowerCase().includes(\"increased\") ? \"increased\" : \"decreased\"\n      });\n      i++; // skip the spam rate line since we already consumed it\n    }\n  }\n}\n\nreturn [{ json: { flaggedDomains: domains } }];\n"
+      },
+      "id": "extract-domains",
+      "name": "Extract Domains",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-has-domains",
+              "leftValue": "={{ $json.flaggedDomains.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-domains",
+      "name": "Has Flagged Domains?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [660, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build a formatted Slack reply summarizing domain health\nconst domains = items[0].json.flaggedDomains;\n\nif (!domains || domains.length === 0) {\n  return [{ json: { message: \"No domain data found in this notification.\" } }];\n}\n\nconst SPAM_THRESHOLD = 5; // percent — domains above this are flagged as critical\n\nlet message = \"*Domain Health Summary*\\n\\n\";\nlet criticalCount = 0;\n\nfor (const d of domains) {\n  const emoji = d.spamRate > SPAM_THRESHOLD ? \"🔴\" : d.spamRate > 1 ? \"🟡\" : \"🟢\";\n  const status = d.spamRate > SPAM_THRESHOLD ? \"CRITICAL\" : d.spamRate > 1 ? \"WARNING\" : \"OK\";\n  \n  if (d.spamRate > SPAM_THRESHOLD) criticalCount++;\n  \n  message += `${emoji} *${d.domain}* — Spam Rate: *${d.spamRate}%* (${d.direction}) [${status}]\\n`;\n}\n\nif (criticalCount > 0) {\n  message += `\\n⚠️ *${criticalCount} domain(s) above ${SPAM_THRESHOLD}% spam threshold — action required!*`;\n} else {\n  message += `\\n✅ All domains within acceptable spam rate thresholds.`;\n}\n\nreturn [{ json: { message: message } }];\n"
+      },
+      "id": "format-reply",
+      "name": "Format Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 240]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "YOUR_CHANNEL_ID",
+          "mode": "id"
+        },
+        "text": "={{ $json.message }}",
+        "otherOptions": {}
+      },
+      "id": "slack-reply",
+      "name": "Send Slack Reply",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1100, 240],
+      "credentials": {
+        "slackApi": {
+          "id": "YOUR_SLACK_CREDENTIAL_ID",
+          "name": "new newest slack"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "no-op",
+      "name": "No Domains Found",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [880, 400]
+    }
+  ],
+  "connections": {
+    "Slack Trigger": {
+      "main": [
+        [
+          {
+            "node": "Extract Domains",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Domains": {
+      "main": [
+        [
+          {
+            "node": "Has Flagged Domains?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Flagged Domains?": {
+      "main": [
+        [
+          {
+            "node": "Format Reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Domains Found",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Reply": {
+      "main": [
+        [
+          {
+            "node": "Send Slack Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2026-02-18T00:00:00.000Z",
+  "versionId": "1"
+}
