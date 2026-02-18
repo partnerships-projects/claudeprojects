@@ -321,11 +321,11 @@ const DataEngine = {
         return recognized >= CONFIG.MIN_VALID_HEADERS;
     },
 
-    // Check if a value looks like a summary/total row marker
+    // Check if a value looks like a summary/total row marker (exact match only)
     _isSummaryValue(val) {
         if (val === null || val === undefined || val === '') return false;
         const s = String(val).trim().toUpperCase();
-        return CONFIG.SUMMARY_ROW_KEYWORDS.some(kw => s === kw || s.includes(kw));
+        return CONFIG.SUMMARY_ROW_KEYWORDS.includes(s);
     },
 
     // Parse a single sheet's raw data into typed records
