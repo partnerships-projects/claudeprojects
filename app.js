@@ -7,12 +7,24 @@ const CONFIG = {
     SPREADSHEET_ID: '1YSP2hUke2MJQvuiszliZu-GLzAnonuyaXuTmYY9O4CU',
     API_BASE: 'https://sheets.googleapis.com/v4/spreadsheets',
 
-    // Column name normalization map (uppercase key -> internal field)
+    // Only read columns A through V (first 22 columns).
+    // Sheets contain auxiliary/duplicate columns after V that must be ignored.
+    MAX_DATA_COLUMNS: 22,
+    DATA_RANGE_SUFFIX: '!A:V',
+
+    // Minimum number of recognized headers a sheet must have to be treated as a client sheet.
+    // Sheets with fewer matches (e.g. summary/config tabs) are skipped automatically.
+    MIN_VALID_HEADERS: 5,
+
+    // Column name normalization map (uppercase key -> internal field).
+    // Only columns A:V are processed; duplicates after V are never seen.
     COLUMN_MAP: {
         'MONTH':            'month',
         'DATE':             'date',
         'HOUR':             'hour',
+        'HOUR SENT':        'hour',
         'SENT EMAIL':       'sentEmail',
+        'EMAIL (USED)':     'sentEmail',
         'EMAIL SENT':       'emailSent',
         '#EMAIL SENT':      'emailSent',
         '# EMAIL SENT':     'emailSent',
@@ -156,7 +168,8 @@ const SheetsAPI = {
     },
 
     async getSheetData(apiKey, spreadsheetId, sheetName) {
-        const range = encodeURIComponent(sheetName);
+        // Only fetch columns A:V to avoid duplicate/auxiliary columns after V
+        const range = encodeURIComponent(sheetName + CONFIG.DATA_RANGE_SUFFIX);
         const url = `${CONFIG.API_BASE}/${spreadsheetId}/values/${range}?key=${encodeURIComponent(apiKey)}&valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=FORMATTED_STRING`;
         const res = await fetch(url);
         if (!res.ok) {
@@ -203,12 +216,23 @@ const SheetsAPI = {
 // 4. DATA ENGINE
 // ============================================================================
 const DataEngine = {
-    // Map raw headers to internal field names
+    // Map raw headers to internal field names (capped to MAX_DATA_COLUMNS)
     mapHeaders(rawHeaders) {
-        return rawHeaders.map(h => {
-            const upper = String(h).trim().toUpperCase();
-            return CONFIG.COLUMN_MAP[upper] || null;
-        });
+        const maxCols = Math.min(rawHeaders.length, CONFIG.MAX_DATA_COLUMNS);
+        const mapped = [];
+        for (let i = 0; i < maxCols; i++) {
+            const upper = String(rawHeaders[i] || '').trim().toUpperCase();
+            mapped.push(CONFIG.COLUMN_MAP[upper] || null);
+        }
+        return mapped;
+    },
+
+    // Validate that a sheet's headers match the expected schema.
+    // Returns true if enough known columns are present.
+    isValidClientSheet(rawHeaders) {
+        const mapped = this.mapHeaders(rawHeaders);
+        const recognized = mapped.filter(f => f !== null).length;
+        return recognized >= CONFIG.MIN_VALID_HEADERS;
     },
 
     // Parse a single sheet's raw data into typed records
@@ -216,7 +240,15 @@ const DataEngine = {
         if (!rawRows || rawRows.length < 2) return [];
 
         const rawHeaders = rawRows[0];
+
+        // Skip sheets that don't have the expected column structure
+        if (!this.isValidClientSheet(rawHeaders)) {
+            console.log(`[Dashboard] Skipping sheet "${sheetName}": only ${this.mapHeaders(rawHeaders).filter(f=>f).length} recognized columns (need ${CONFIG.MIN_VALID_HEADERS})`);
+            return [];
+        }
+
         const fieldMap = this.mapHeaders(rawHeaders);
+        const colCount = fieldMap.length; // already capped to MAX_DATA_COLUMNS
         const records = [];
 
         for (let i = 1; i < rawRows.length; i++) {
@@ -226,12 +258,14 @@ const DataEngine = {
             const record = { _sheet: sheetName };
             let hasData = false;
 
-            fieldMap.forEach((field, idx) => {
+            // Only iterate up to the capped column count
+            for (let idx = 0; idx < colCount; idx++) {
+                const field = fieldMap[idx];
                 if (field && row[idx] !== undefined && row[idx] !== null && row[idx] !== '') {
                     record[field] = row[idx];
                     hasData = true;
                 }
-            });
+            }
 
             // Skip completely empty rows
             if (!hasData) continue;
@@ -265,18 +299,27 @@ const DataEngine = {
         return records;
     },
 
-    // Parse all sheets into a flat array of records
+    // Parse all sheets into a flat array of records.
+    // Sheets that fail header validation are silently excluded (logged to console).
     parseAll(allSheetData) {
         const allRecords = [];
         const clientMap = {};
+        const skippedSheets = [];
 
         for (const [sheetName, rawRows] of Object.entries(allSheetData)) {
             const records = this.parseSheet(rawRows, sheetName);
             if (records.length > 0) {
                 allRecords.push(...records);
                 clientMap[sheetName] = records.length;
+            } else if (rawRows.length > 0) {
+                skippedSheets.push(sheetName);
             }
         }
+
+        if (skippedSheets.length > 0) {
+            console.log(`[Dashboard] Skipped ${skippedSheets.length} non-client sheets: ${skippedSheets.join(', ')}`);
+        }
+        console.log(`[Dashboard] Loaded ${allRecords.length} records from ${Object.keys(clientMap).length} client sheets: ${Object.keys(clientMap).join(', ')}`);
 
         return { allRecords, clientMap };
     },
