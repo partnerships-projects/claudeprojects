@@ -324,16 +324,15 @@ const DataEngine = {
         return { allRecords, clientMap };
     },
 
-    // Extract unique filter options from records
-    getFilterOptions(records) {
-        const clients = new Set();
+    // Extract unique filter options from records.
+    // Client list is derived from sheet names (1 sheet = 1 client), not the CLIENT NAME column.
+    getFilterOptions(records, clientMap) {
         const types = new Set();
         const audiences = new Set();
         let minDate = null;
         let maxDate = null;
 
         records.forEach(r => {
-            if (r._clientName) clients.add(r._clientName);
             if (r._type) types.add(r._type);
             if (r._targetAudience) audiences.add(r._targetAudience);
             if (r._date) {
@@ -343,7 +342,7 @@ const DataEngine = {
         });
 
         return {
-            clients: [...clients].sort(),
+            clients: Object.keys(clientMap).sort(),
             types: [...types].sort(),
             audiences: [...audiences].sort(),
             minDate,
@@ -463,9 +462,9 @@ const MetricsCalc = {
             .sort((a, b) => b.metrics.totalSent - a.metrics.totalSent);
     },
 
-    // Compute per-client metrics
+    // Compute per-client metrics (grouped by sheet name, since 1 sheet = 1 client)
     computeClientComparison(records) {
-        return this.computeByDimension(records, r => r._clientName, 'client');
+        return this.computeByDimension(records, r => r._sheet, 'client');
     },
 };
 
@@ -556,9 +555,10 @@ const FilterEngine = {
             result = result.filter(r => !r._date || r._date <= to);
         }
 
-        // Client filter (only relevant in master view)
+        // Client filter (only relevant in master view).
+        // Matches on sheet name since 1 sheet = 1 client.
         if (view === 'master' && filters.client !== 'all') {
-            result = result.filter(r => r._clientName === filters.client);
+            result = result.filter(r => r._sheet === filters.client);
         }
 
         // Type
@@ -1268,7 +1268,9 @@ function renderMasterDashboard() {
 
     Charts.destroyAll();
 
-    const clientCount = new Set(filteredRecords.map(r => r._sheet)).size;
+    // Count distinct client sheets represented in the filtered data
+    const activeClientSheets = new Set(filteredRecords.map(r => r._sheet));
+    const clientCount = activeClientSheets.size;
     const dateRange = getDateRangeLabel(filteredRecords);
 
     let html = `<div class="fade-in">`;
@@ -1737,9 +1739,9 @@ async function loadData(apiKey, spreadsheetId) {
             }
         );
 
-        // Parse all data
+        // Parse all data (non-client sheets are automatically excluded by header validation)
         const { allRecords, clientMap } = DataEngine.parseAll(allSheetData);
-        const filterOptions = DataEngine.getFilterOptions(allRecords);
+        const filterOptions = DataEngine.getFilterOptions(allRecords, clientMap);
 
         // Update store
         Store.update({
