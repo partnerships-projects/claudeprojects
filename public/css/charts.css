@@ -1,0 +1,160 @@
+/* ============================================================================
+   CHART & VISUALIZATION STYLES — Chart containers, funnel, sentiment, toast
+   ============================================================================ */
+
+/* ==================== CHART CONTAINERS ==================== */
+.chart-container {
+    position: relative;
+    width: 100%;
+    margin-top: 8px;
+}
+
+.chart-container.xs { height: 160px; }
+.chart-container.sm { height: 220px; }
+.chart-container.md { height: 280px; }
+.chart-container.lg { height: 340px; }
+.chart-container.xl { height: 420px; }
+
+/* ==================== FUNNEL ==================== */
+.funnel-step {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid rgba(35, 40, 66, 0.5);
+}
+
+.funnel-step:last-child {
+    border-bottom: none;
+}
+
+.funnel-label {
+    width: 90px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-weight: 500;
+    flex-shrink: 0;
+}
+
+.funnel-bar-wrap {
+    flex: 1;
+    min-width: 0;
+}
+
+.funnel-bar {
+    height: 26px;
+    border-radius: var(--radius-sm);
+    display: flex;
+    align-items: center;
+    padding: 0 10px;
+    font-size: 11px;
+    font-weight: 700;
+    color: #fff;
+    transition: width 0.6s ease;
+    min-width: 40px;
+}
+
+.funnel-value {
+    width: 70px;
+    text-align: right;
+    font-size: 13px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+}
+
+.funnel-rate {
+    width: 50px;
+    text-align: right;
+    font-size: 11px;
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
+/* ==================== SENTIMENT ==================== */
+.sentiment-pills {
+    display: flex;
+    gap: 10px;
+}
+
+.pill {
+    flex: 1;
+    text-align: center;
+    padding: 14px 10px;
+    border-radius: var(--radius-md);
+    border: 1px solid;
+}
+
+.pill-positive {
+    background: rgba(52, 211, 153, 0.06);
+    border-color: rgba(52, 211, 153, 0.15);
+}
+
+.pill-negative {
+    background: rgba(248, 113, 113, 0.06);
+    border-color: rgba(248, 113, 113, 0.15);
+}
+
+.pill-complex {
+    background: rgba(251, 191, 36, 0.06);
+    border-color: rgba(251, 191, 36, 0.15);
+}
+
+.pill .pill-count {
+    font-size: 26px;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+    font-variant-numeric: tabular-nums;
+}
+
+.pill .pill-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    font-weight: 600;
+    margin-top: 2px;
+}
+
+.pill .pill-rate {
+    font-size: 11px;
+    margin-top: 4px;
+    font-weight: 500;
+}
+
+.pill-positive .pill-count { color: var(--positive); }
+.pill-negative .pill-count { color: var(--negative); }
+.pill-complex .pill-count { color: var(--neutral); }
+.pill-positive .pill-label, .pill-positive .pill-rate { color: rgba(52, 211, 153, 0.6); }
+.pill-negative .pill-label, .pill-negative .pill-rate { color: rgba(248, 113, 113, 0.6); }
+.pill-complex .pill-label, .pill-complex .pill-rate { color: rgba(251, 191, 36, 0.6); }
+
+/* ==================== TOAST ==================== */
+.toast-container {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    z-index: 2000;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.toast {
+    padding: 12px 16px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    font-size: 13px;
+    color: var(--text-primary);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    animation: slideInRight 0.3s ease;
+    max-width: 360px;
+}
+
+.toast.toast-error {
+    border-color: rgba(248, 113, 113, 0.3);
+}
+
+.toast.toast-success {
+    border-color: rgba(52, 211, 153, 0.3);
+}

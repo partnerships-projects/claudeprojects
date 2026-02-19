@@ -1,0 +1,133 @@
+/* ============================================================================
+   ANIMATIONS, PRINT STYLES & RESPONSIVE BREAKPOINTS
+   ============================================================================ */
+
+/* ==================== ANIMATIONS ==================== */
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+@keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(16px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideInRight {
+    from { opacity: 0; transform: translateX(40px); }
+    to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.fade-in {
+    animation: fadeIn 0.3s ease;
+}
+
+/* ==================== PRINT STYLES ==================== */
+@media print {
+    body { background: #fff; color: #111; }
+    .top-bar, .nav-tabs, .filter-bar { display: none; }
+    .card { border: 1px solid #ddd; background: #fff; break-inside: avoid; }
+    .dashboard-content { padding: 0; max-width: none; }
+}
+
+/* ==================== RESPONSIVE ==================== */
+@media (max-width: 1280px) {
+    .grid-6 { grid-template-columns: repeat(3, 1fr); }
+    .grid-5 { grid-template-columns: repeat(3, 1fr); }
+    .grid-4 { grid-template-columns: repeat(2, 1fr); }
+    .grid-3-2 { grid-template-columns: 1fr 1fr; }
+}
+
+@media (max-width: 1024px) {
+    .dashboard-content { padding: 20px 20px 40px; }
+    .top-bar { padding: 12px 20px; }
+    .nav-tabs { padding: 0 20px; }
+    .filter-bar { padding: 10px 20px; }
+    .grid-3 { grid-template-columns: repeat(2, 1fr); }
+    .grid-2-1 { grid-template-columns: 1fr; }
+    .grid-1-2 { grid-template-columns: 1fr; }
+    .grid-3-2 { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 768px) {
+    .dashboard-content { padding: 16px 12px 32px; }
+    .top-bar { padding: 10px 12px; }
+    .nav-tabs { padding: 0 12px; }
+    .filter-bar { padding: 8px 12px; }
+
+    .grid-6, .grid-5, .grid-4, .grid-3, .grid-2 {
+        grid-template-columns: 1fr;
+    }
+
+    .summary-strip {
+        flex-direction: column;
+        gap: 0;
+    }
+
+    .summary-item {
+        border-right: none;
+        border-bottom: 1px solid var(--border-light);
+        padding: 10px 0;
+    }
+
+    .summary-item:last-child {
+        border-bottom: none;
+    }
+
+    .kpi-value {
+        font-size: 28px;
+    }
+
+    .top-bar-right span {
+        display: none;
+    }
+
+    .filter-bar {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .filter-group {
+        flex-wrap: wrap;
+    }
+
+    .filter-separator {
+        display: none;
+    }
+
+    .filter-count {
+        margin-left: 0;
+    }
+
+    .data-table {
+        font-size: 12px;
+    }
+
+    .data-table th, .data-table td {
+        padding: 6px 6px;
+    }
+
+    .funnel-label { width: 70px; font-size: 11px; }
+    .funnel-bar { height: 22px; font-size: 10px; }
+
+    .ratio-number { font-size: 32px; }
+}
+
+@media (max-width: 480px) {
+    .logo-text { display: none; }
+    .nav-tab span { display: none; }
+    .nav-tab .tab-icon { margin: 0; }
+
+    .card { padding: 14px; }
+    .setup-card { padding: 24px; }
+    .summary-item .s-value { font-size: 18px; }
+}
