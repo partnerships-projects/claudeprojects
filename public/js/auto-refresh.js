@@ -74,10 +74,19 @@ const AutoRefresh = {
             );
             const { allRecords, clientMap } = DataEngine.parseAll(allSheetData);
 
-            // Safety guard: never overwrite good data with empty/degraded results
+            // Guard 1: never overwrite good data with an empty result
             const currentRecordCount = Store.state.allRecords.length;
             if (allRecords.length === 0 && currentRecordCount > 0) {
                 console.warn('[AutoRefresh] Fetch returned 0 records — keeping existing data');
+                this._updateStatusTime();
+                return;
+            }
+
+            // Guard 2: skip if client count dropped below 50% (partial/rate-limited fetch)
+            const currentClientCount = Object.keys(Store.state.clientMap).length;
+            const newClientCount = Object.keys(clientMap).length;
+            if (currentClientCount > 0 && newClientCount < currentClientCount * 0.5) {
+                console.warn(`[AutoRefresh] Degraded data (${newClientCount}/${currentClientCount} clients) — keeping existing data`);
                 this._updateStatusTime();
                 return;
             }
@@ -94,7 +103,21 @@ const AutoRefresh = {
             this._lastFingerprint = newFingerprint;
 
             const filterOptions = DataEngine.getFilterOptions(allRecords, clientMap);
-            const { currentView, currentClient, filters } = Store.state;
+            let { currentView, currentClient, filters } = Store.state;
+
+            // Guard 3: if the active client view has no data in the new fetch, fall back to master.
+            // We fold the view change into the single Store.update() below to avoid a double render.
+            const viewOverride = {};
+            if (currentView === 'client' && currentClient) {
+                const clientHasData = allRecords.some(r => r._sheet === currentClient);
+                if (!clientHasData) {
+                    console.warn(`[AutoRefresh] Client "${currentClient}" has no data in refresh — switching to master`);
+                    currentView = 'master';
+                    currentClient = null;
+                    viewOverride.currentView = 'master';
+                    viewOverride.currentClient = null;
+                }
+            }
 
             // Store.update() triggers the subscriber in app.js → renderDashboard()
             Store.update({
@@ -105,6 +128,7 @@ const AutoRefresh = {
                 clientMap,
                 filterOptions,
                 dataLoaded: true,
+                ...viewOverride,
             });
 
             showToast('Data updated automatically', 'success');
