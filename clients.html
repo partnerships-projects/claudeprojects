@@ -1,0 +1,1258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Client Dashboard — Agency Automation</title>
+    <style>
+        :root {
+            --bg-primary: #0f1117;
+            --bg-secondary: #1a1d29;
+            --bg-card: #1e2235;
+            --bg-card-hover: #252a40;
+            --border: #2a2f45;
+            --text-primary: #e8eaf0;
+            --text-secondary: #8b8fa3;
+            --text-muted: #5c6078;
+            --accent-blue: #4f8df5;
+            --accent-green: #34d399;
+            --accent-red: #f87171;
+            --accent-yellow: #fbbf24;
+            --accent-purple: #a78bfa;
+            --accent-cyan: #22d3ee;
+            --accent-orange: #fb923c;
+            --accent-pink: #f472b6;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            line-height: 1.5;
+            overflow-x: hidden;
+        }
+
+        /* ── Navigation ── */
+        .nav {
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            padding: 0 40px;
+            display: flex;
+            align-items: center;
+            height: 56px;
+            gap: 32px;
+        }
+
+        .nav-brand {
+            font-size: 17px;
+            font-weight: 800;
+            color: var(--text-primary);
+            letter-spacing: -0.3px;
+            margin-right: 24px;
+            text-decoration: none;
+        }
+
+        .nav a {
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 600;
+            padding: 16px 4px;
+            border-bottom: 2px solid transparent;
+            transition: all 0.15s;
+        }
+
+        .nav a:hover { color: var(--text-primary); }
+        .nav a.active {
+            color: var(--accent-blue);
+            border-bottom-color: var(--accent-blue);
+        }
+
+        /* ── Main Layout ── */
+        .page {
+            max-width: 1440px;
+            margin: 0 auto;
+            padding: 32px 40px;
+            transition: margin-right 0.3s ease;
+        }
+
+        .page.peek-open {
+            margin-right: 520px;
+        }
+
+        .page-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            margin-bottom: 28px;
+        }
+
+        .page-header h1 {
+            font-size: 26px;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+            margin-bottom: 4px;
+        }
+
+        .page-header p {
+            color: var(--text-secondary);
+            font-size: 14px;
+        }
+
+        /* ── Summary Strip ── */
+        .summary-strip {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 24px;
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            padding: 16px 20px;
+            border: 1px solid var(--border);
+        }
+
+        .summary-item {
+            flex: 1;
+            text-align: center;
+            padding: 0 12px;
+            border-right: 1px solid var(--border);
+        }
+
+        .summary-item:last-child { border-right: none; }
+
+        .summary-item .label {
+            font-size: 11px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            margin-bottom: 4px;
+        }
+
+        .summary-item .value {
+            font-size: 22px;
+            font-weight: 700;
+        }
+
+        /* ── Controls Bar ── */
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            align-items: center;
+        }
+
+        .search-input {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 9px 14px;
+            color: var(--text-primary);
+            font-size: 13px;
+            width: 260px;
+            outline: none;
+            transition: border-color 0.15s;
+        }
+
+        .search-input::placeholder { color: var(--text-muted); }
+        .search-input:focus { border-color: var(--accent-blue); }
+
+        .filter-btn {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 9px 16px;
+            color: var(--text-secondary);
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .filter-btn:hover { background: var(--bg-card-hover); color: var(--text-primary); }
+        .filter-btn.active { background: rgba(79, 141, 245, 0.12); color: var(--accent-blue); border-color: rgba(79, 141, 245, 0.3); }
+
+        .controls-right { margin-left: auto; }
+
+        /* ── Client Table ── */
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 24px;
+        }
+
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .data-table th {
+            text-align: left;
+            font-size: 11px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            padding: 10px 12px;
+            border-bottom: 1px solid var(--border);
+            font-weight: 600;
+        }
+
+        .data-table td {
+            padding: 14px 12px;
+            font-size: 13px;
+            border-bottom: 1px solid rgba(42, 47, 69, 0.5);
+            color: var(--text-primary);
+        }
+
+        .data-table tbody tr {
+            cursor: pointer;
+            transition: background 0.1s;
+        }
+
+        .data-table tbody tr:hover {
+            background: rgba(79, 141, 245, 0.06);
+        }
+
+        .data-table tbody tr.selected {
+            background: rgba(79, 141, 245, 0.1);
+        }
+
+        .client-name {
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .client-avatar {
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 13px;
+            font-weight: 700;
+            color: #fff;
+            flex-shrink: 0;
+        }
+
+        .status-pill {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+        }
+
+        .status-active { background: rgba(52, 211, 153, 0.12); color: var(--accent-green); }
+        .status-onboarding { background: rgba(79, 141, 245, 0.12); color: var(--accent-blue); }
+        .status-paused { background: rgba(251, 191, 36, 0.12); color: var(--accent-yellow); }
+        .status-churned { background: rgba(248, 113, 113, 0.12); color: var(--accent-red); }
+        .status-lead { background: rgba(167, 139, 250, 0.12); color: var(--accent-purple); }
+
+        .num { font-variant-numeric: tabular-nums; font-weight: 600; }
+
+        /* ── Side Peek Panel ── */
+        .peek-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 90;
+        }
+
+        .peek-overlay.open { display: block; }
+
+        .peek-panel {
+            position: fixed;
+            top: 0;
+            right: -520px;
+            width: 520px;
+            height: 100vh;
+            background: var(--bg-secondary);
+            border-left: 1px solid var(--border);
+            z-index: 100;
+            transition: right 0.3s ease;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .peek-panel.open { right: 0; }
+
+        .peek-header {
+            padding: 20px 24px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: flex-start;
+            gap: 14px;
+            flex-shrink: 0;
+        }
+
+        .peek-avatar {
+            width: 48px;
+            height: 48px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            font-weight: 700;
+            color: #fff;
+            flex-shrink: 0;
+        }
+
+        .peek-title-block { flex: 1; }
+
+        .peek-title {
+            font-size: 18px;
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+
+        .peek-subtitle {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .peek-close {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            font-size: 20px;
+            cursor: pointer;
+            padding: 4px;
+            line-height: 1;
+            transition: color 0.15s;
+        }
+
+        .peek-close:hover { color: var(--text-primary); }
+
+        /* ── Peek Tabs ── */
+        .peek-tabs {
+            display: flex;
+            border-bottom: 1px solid var(--border);
+            padding: 0 24px;
+            flex-shrink: 0;
+        }
+
+        .peek-tab {
+            padding: 12px 16px;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-muted);
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            transition: all 0.15s;
+        }
+
+        .peek-tab:hover { color: var(--text-secondary); }
+
+        .peek-tab.active {
+            color: var(--accent-blue);
+            border-bottom-color: var(--accent-blue);
+        }
+
+        .peek-body {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px 24px;
+        }
+
+        /* ── Peek Content ── */
+        .peek-section {
+            margin-bottom: 24px;
+        }
+
+        .peek-section-title {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            margin-bottom: 12px;
+        }
+
+        .peek-kpi-row {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .peek-kpi {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 14px;
+            text-align: center;
+        }
+
+        .peek-kpi .pk-value {
+            font-size: 22px;
+            font-weight: 800;
+        }
+
+        .peek-kpi .pk-label {
+            font-size: 11px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-top: 2px;
+        }
+
+        .peek-info-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+
+        .peek-info-item {
+            padding: 10px 12px;
+            background: var(--bg-card);
+            border-radius: 8px;
+            border: 1px solid var(--border);
+        }
+
+        .peek-info-item .pi-label {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-bottom: 2px;
+        }
+
+        .peek-info-item .pi-value {
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        /* ── Project cards in peek ── */
+        .project-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 16px;
+            margin-bottom: 10px;
+        }
+
+        .project-card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 10px;
+        }
+
+        .project-name {
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .project-meta {
+            display: flex;
+            gap: 16px;
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-bottom: 10px;
+        }
+
+        .project-meta span {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 6px;
+            background: rgba(255,255,255,0.06);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.6s ease;
+        }
+
+        .progress-label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+
+        /* ── Feedback items in peek ── */
+        .feedback-item {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 16px;
+            margin-bottom: 10px;
+        }
+
+        .feedback-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+
+        .feedback-date {
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        .feedback-rating {
+            display: flex;
+            gap: 2px;
+        }
+
+        .star { color: var(--accent-yellow); font-size: 14px; }
+        .star.empty { color: var(--text-muted); }
+
+        .feedback-text {
+            font-size: 13px;
+            color: var(--text-secondary);
+            line-height: 1.6;
+        }
+
+        .feedback-type {
+            display: inline-block;
+            margin-top: 8px;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            background: rgba(167, 139, 250, 0.12);
+            color: var(--accent-purple);
+        }
+
+        /* ── Timeline in peek ── */
+        .timeline-item {
+            display: flex;
+            gap: 12px;
+            padding: 10px 0;
+            border-bottom: 1px solid rgba(42, 47, 69, 0.4);
+        }
+
+        .timeline-item:last-child { border-bottom: none; }
+
+        .timeline-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-top: 6px;
+            flex-shrink: 0;
+        }
+
+        .timeline-content {
+            flex: 1;
+        }
+
+        .timeline-text {
+            font-size: 13px;
+            color: var(--text-primary);
+        }
+
+        .timeline-date {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-top: 2px;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 32px;
+            color: var(--text-muted);
+            font-size: 13px;
+        }
+
+        /* ── Responsive ── */
+        @media (max-width: 1200px) {
+            .page.peek-open { margin-right: 0; }
+            .peek-panel { width: 100%; right: -100%; }
+        }
+
+        @media (max-width: 768px) {
+            .page { padding: 20px 16px; }
+            .nav { padding: 0 16px; gap: 16px; }
+            .summary-strip { flex-direction: column; }
+            .summary-item { border-right: none; border-bottom: 1px solid var(--border); padding: 10px 0; }
+            .summary-item:last-child { border-bottom: none; }
+            .controls { flex-wrap: wrap; }
+            .search-input { width: 100%; }
+        }
+
+        /* scrollbar */
+        .peek-body::-webkit-scrollbar { width: 6px; }
+        .peek-body::-webkit-scrollbar-track { background: transparent; }
+        .peek-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    </style>
+</head>
+<body>
+
+<!-- Navigation -->
+<nav class="nav">
+    <a href="./index.html" class="nav-brand">AgencyPilot</a>
+    <a href="./index.html">Campaigns</a>
+    <a href="./clients.html" class="active">Clients</a>
+</nav>
+
+<!-- Main Page -->
+<div class="page" id="main-page">
+
+    <div class="page-header">
+        <div>
+            <h1>Clients</h1>
+            <p>All client data, projects, and feedback in one place</p>
+        </div>
+    </div>
+
+    <!-- Summary -->
+    <div class="summary-strip" id="summary-strip"></div>
+
+    <!-- Filters -->
+    <div class="controls">
+        <input type="text" class="search-input" id="search" placeholder="Search clients...">
+        <button class="filter-btn active" data-filter="all">All</button>
+        <button class="filter-btn" data-filter="active">Active</button>
+        <button class="filter-btn" data-filter="onboarding">Onboarding</button>
+        <button class="filter-btn" data-filter="paused">Paused</button>
+        <button class="filter-btn" data-filter="churned">Churned</button>
+        <button class="filter-btn" data-filter="lead">Lead</button>
+    </div>
+
+    <!-- Client Table -->
+    <div class="card">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Client</th>
+                    <th>Status</th>
+                    <th>Projects</th>
+                    <th>Feedback Score</th>
+                    <th>Revenue</th>
+                    <th>Since</th>
+                    <th>Last Activity</th>
+                </tr>
+            </thead>
+            <tbody id="client-table-body"></tbody>
+        </table>
+    </div>
+
+</div>
+
+<!-- Side Peek Overlay -->
+<div class="peek-overlay" id="peek-overlay"></div>
+
+<!-- Side Peek Panel -->
+<div class="peek-panel" id="peek-panel">
+    <div class="peek-header" id="peek-header"></div>
+    <div class="peek-tabs" id="peek-tabs">
+        <div class="peek-tab active" data-tab="overview">Overview</div>
+        <div class="peek-tab" data-tab="projects">Projects</div>
+        <div class="peek-tab" data-tab="feedback">Feedback</div>
+        <div class="peek-tab" data-tab="history">History</div>
+    </div>
+    <div class="peek-body" id="peek-body"></div>
+</div>
+
+<script>
+// =============================================================================
+// DATABASE 1: CLIENTS
+// =============================================================================
+const CLIENTS = [
+    {
+        id: 1, name: "Meridian SaaS", contact: "Sarah Chen", email: "sarah@meridiansaas.com",
+        status: "active", industry: "B2B SaaS", retainer: 8500, since: "2024-03-15",
+        lastActivity: "2025-02-18", color: "#4f8df5",
+        notes: "Long-term partnership. Expanding into EU market Q2."
+    },
+    {
+        id: 2, name: "BrightPath Edu", contact: "James Wilson", email: "james@brightpathedu.com",
+        status: "active", industry: "EdTech", retainer: 6200, since: "2024-06-01",
+        lastActivity: "2025-02-17", color: "#34d399",
+        notes: "Focus on teacher acquisition campaigns. Strong NPS."
+    },
+    {
+        id: 3, name: "VoltEdge Labs", contact: "Priya Sharma", email: "priya@voltedgelabs.com",
+        status: "active", industry: "DeepTech", retainer: 12000, since: "2023-11-20",
+        lastActivity: "2025-02-19", color: "#a78bfa",
+        notes: "Enterprise-tier client. Multiple concurrent campaigns."
+    },
+    {
+        id: 4, name: "GreenLeaf Co", contact: "Tom Nguyen", email: "tom@greenleafco.com",
+        status: "onboarding", industry: "Sustainability", retainer: 4800, since: "2025-01-10",
+        lastActivity: "2025-02-15", color: "#22d3ee",
+        notes: "New client. Onboarding in progress — setting up first campaign."
+    },
+    {
+        id: 5, name: "NovaPeak Fitness", contact: "Maria Rodriguez", email: "maria@novapeak.com",
+        status: "active", industry: "Health & Wellness", retainer: 5500, since: "2024-08-22",
+        lastActivity: "2025-02-16", color: "#fb923c",
+        notes: "Seasonal campaign cycles. Ramp up Q1 and Q3."
+    },
+    {
+        id: 6, name: "SkyBridge Consulting", contact: "David Kim", email: "david@skybridgeconsulting.com",
+        status: "paused", industry: "Management Consulting", retainer: 7000, since: "2024-01-08",
+        lastActivity: "2025-01-20", color: "#fbbf24",
+        notes: "Paused campaigns during internal restructuring. Expected to resume March."
+    },
+    {
+        id: 7, name: "Apex Fintech", contact: "Laura Bennett", email: "laura@apexfintech.com",
+        status: "churned", industry: "Fintech", retainer: 0, since: "2023-09-01",
+        lastActivity: "2024-11-30", color: "#f87171",
+        notes: "Churned Nov 2024. Budget cuts. Left on good terms — possible re-engagement."
+    },
+    {
+        id: 8, name: "ClearView Analytics", contact: "Mark Thompson", email: "mark@clearviewanalytics.com",
+        status: "active", industry: "Data Analytics", retainer: 9200, since: "2024-04-10",
+        lastActivity: "2025-02-19", color: "#f472b6",
+        notes: "High-performing account. Consistently above-average open rates."
+    },
+    {
+        id: 9, name: "UrbanNest Realty", contact: "Angela Park", email: "angela@urbannest.com",
+        status: "lead", industry: "Real Estate", retainer: 0, since: "2025-02-01",
+        lastActivity: "2025-02-12", color: "#8b8fa3",
+        notes: "Warm lead from referral. Discovery call completed. Proposal sent."
+    },
+    {
+        id: 10, name: "Pulse Digital", contact: "Ryan Foster", email: "ryan@pulsedigital.io",
+        status: "onboarding", industry: "Digital Marketing", retainer: 5000, since: "2025-01-25",
+        lastActivity: "2025-02-14", color: "#22d3ee",
+        notes: "Agency partnership. White-label arrangement for their overflow clients."
+    },
+];
+
+// =============================================================================
+// DATABASE 2: PROJECTS
+// =============================================================================
+const PROJECTS = [
+    // Meridian SaaS
+    { id: 101, clientId: 1, name: "Q1 US SaaS Outreach", status: "active", type: "Email Campaign", startDate: "2025-01-06", endDate: "2025-03-31", progress: 65, sent: 4200, opened: 1956, replied: 318, conversions: 54, budget: 3200 },
+    { id: 102, clientId: 1, name: "EU Market Entry Campaign", status: "planning", type: "Email Campaign", startDate: "2025-03-01", endDate: "2025-05-30", progress: 15, sent: 0, opened: 0, replied: 0, conversions: 0, budget: 4500 },
+    { id: 103, clientId: 1, name: "Website Redesign Lead Gen", status: "completed", type: "Landing Page", startDate: "2024-09-01", endDate: "2024-12-15", progress: 100, sent: 8600, opened: 4120, replied: 620, conversions: 98, budget: 2800 },
+
+    // BrightPath Edu
+    { id: 201, clientId: 2, name: "Teacher Acquisition Spring", status: "active", type: "Email Campaign", startDate: "2025-01-15", endDate: "2025-04-15", progress: 45, sent: 3100, opened: 1410, replied: 245, conversions: 38, budget: 2400 },
+    { id: 202, clientId: 2, name: "School District Outreach", status: "completed", type: "Email Campaign", startDate: "2024-08-01", endDate: "2024-11-30", progress: 100, sent: 5200, opened: 2340, replied: 412, conversions: 67, budget: 3000 },
+
+    // VoltEdge Labs
+    { id: 301, clientId: 3, name: "Enterprise CTO Outreach", status: "active", type: "Email Campaign", startDate: "2025-01-06", endDate: "2025-03-15", progress: 80, sent: 2800, opened: 1540, replied: 286, conversions: 42, budget: 5000 },
+    { id: 302, clientId: 3, name: "AI Conference Follow-up", status: "active", type: "Email Campaign", startDate: "2025-02-01", endDate: "2025-03-01", progress: 55, sent: 620, opened: 380, replied: 94, conversions: 16, budget: 1500 },
+    { id: 303, clientId: 3, name: "Series B Investor PR", status: "completed", type: "PR Campaign", startDate: "2024-06-01", endDate: "2024-08-30", progress: 100, sent: 450, opened: 320, replied: 128, conversions: 22, budget: 6000 },
+    { id: 304, clientId: 3, name: "DevTool Launch Sequence", status: "completed", type: "Email Campaign", startDate: "2024-01-15", endDate: "2024-04-30", progress: 100, sent: 6800, opened: 3200, replied: 510, conversions: 78, budget: 4200 },
+
+    // GreenLeaf Co
+    { id: 401, clientId: 4, name: "Sustainability Summit Outreach", status: "planning", type: "Email Campaign", startDate: "2025-02-20", endDate: "2025-04-20", progress: 10, sent: 0, opened: 0, replied: 0, conversions: 0, budget: 2000 },
+
+    // NovaPeak Fitness
+    { id: 501, clientId: 5, name: "New Year Resolution Campaign", status: "active", type: "Email Campaign", startDate: "2025-01-02", endDate: "2025-02-28", progress: 85, sent: 3800, opened: 1900, replied: 340, conversions: 52, budget: 2200 },
+    { id: 502, clientId: 5, name: "Summer Body Challenge Promo", status: "completed", type: "Social + Email", startDate: "2024-05-01", endDate: "2024-07-31", progress: 100, sent: 4500, opened: 2250, replied: 380, conversions: 61, budget: 2800 },
+
+    // SkyBridge Consulting
+    { id: 601, clientId: 6, name: "CFO Roundtable Invites", status: "paused", type: "Email Campaign", startDate: "2024-11-01", endDate: "2025-02-28", progress: 40, sent: 1200, opened: 540, replied: 86, conversions: 12, budget: 3500 },
+    { id: 602, clientId: 6, name: "Thought Leadership Sequence", status: "completed", type: "Email Campaign", startDate: "2024-03-01", endDate: "2024-07-30", progress: 100, sent: 3600, opened: 1620, replied: 270, conversions: 38, budget: 3000 },
+
+    // Apex Fintech (churned)
+    { id: 701, clientId: 7, name: "Fintech Founders Outreach", status: "completed", type: "Email Campaign", startDate: "2024-01-01", endDate: "2024-05-30", progress: 100, sent: 5400, opened: 2430, replied: 378, conversions: 56, budget: 4000 },
+    { id: 702, clientId: 7, name: "Banking API Launch", status: "completed", type: "Email + Webinar", startDate: "2024-06-15", endDate: "2024-10-30", progress: 100, sent: 3200, opened: 1440, replied: 198, conversions: 28, budget: 3500 },
+
+    // ClearView Analytics
+    { id: 801, clientId: 8, name: "Data Platform Launch", status: "active", type: "Email Campaign", startDate: "2025-01-10", endDate: "2025-04-10", progress: 50, sent: 2600, opened: 1430, replied: 268, conversions: 44, budget: 3800 },
+    { id: 802, clientId: 8, name: "Analytics Summit Promotion", status: "completed", type: "Email Campaign", startDate: "2024-09-01", endDate: "2024-12-01", progress: 100, sent: 4100, opened: 2255, replied: 390, conversions: 62, budget: 3200 },
+
+    // UrbanNest Realty (lead — no projects yet)
+
+    // Pulse Digital
+    { id: 1001, clientId: 10, name: "White-Label Setup & Test Campaign", status: "planning", type: "Email Campaign", startDate: "2025-02-15", endDate: "2025-03-15", progress: 20, sent: 0, opened: 0, replied: 0, conversions: 0, budget: 1800 },
+];
+
+// =============================================================================
+// DATABASE 3: CLIENT FEEDBACK
+// =============================================================================
+const FEEDBACK = [
+    // Meridian SaaS
+    { id: 1001, clientId: 1, date: "2025-02-14", rating: 5, type: "Campaign Review", text: "Outstanding results on the Q1 campaign. Reply rates well above industry benchmarks. The team is responsive and strategic." },
+    { id: 1002, clientId: 1, date: "2024-12-20", rating: 5, type: "Project Completion", text: "Website redesign lead gen exceeded all expectations. 98 conversions from email alone. Extending our contract." },
+    { id: 1003, clientId: 1, date: "2024-09-15", rating: 4, type: "Monthly Review", text: "Solid month. Would like to see more A/B testing on subject lines. Otherwise, great communication and execution." },
+    { id: 1004, clientId: 1, date: "2024-06-10", rating: 4, type: "Monthly Review", text: "Good onboarding experience. Took about 2 weeks to get first campaign live — slightly longer than expected." },
+
+    // BrightPath Edu
+    { id: 2001, clientId: 2, date: "2025-02-10", rating: 4, type: "Campaign Review", text: "Teacher acquisition campaign performing well. Conversion cost is within target. Looking forward to scaling." },
+    { id: 2002, clientId: 2, date: "2024-11-28", rating: 5, type: "Project Completion", text: "School district outreach was a massive success. 67 conversions and several multi-year contracts signed." },
+    { id: 2003, clientId: 2, date: "2024-08-20", rating: 3, type: "Monthly Review", text: "Decent results but reply quality was mixed. Some leads were not decision-makers. Need better targeting." },
+
+    // VoltEdge Labs
+    { id: 3001, clientId: 3, date: "2025-02-18", rating: 5, type: "Campaign Review", text: "CTO outreach campaign is best-in-class. The personalization engine is making a real difference — prospects are replying with genuine interest." },
+    { id: 3002, clientId: 3, date: "2025-02-05", rating: 4, type: "Campaign Review", text: "AI conference follow-up sequence is well-structured. Early results are promising." },
+    { id: 3003, clientId: 3, date: "2024-08-25", rating: 5, type: "Project Completion", text: "Series B investor PR campaign was phenomenal. Directly contributed to successful fundraise." },
+    { id: 3004, clientId: 3, date: "2024-04-28", rating: 5, type: "Project Completion", text: "DevTool launch sequence drove 78 conversions. ROI exceeded 400%. Renewing for next year." },
+    { id: 3005, clientId: 3, date: "2024-02-15", rating: 4, type: "Monthly Review", text: "Great start to the partnership. Team understands our complex technical audience well." },
+
+    // GreenLeaf Co
+    { id: 4001, clientId: 4, date: "2025-02-08", rating: 4, type: "Onboarding", text: "Onboarding process is smooth so far. Impressed by the kickoff document and campaign strategy proposal." },
+
+    // NovaPeak Fitness
+    { id: 5001, clientId: 5, date: "2025-02-12", rating: 5, type: "Campaign Review", text: "New Year campaign crushed it! 52 conversions and we're not even done. Best January we've ever had." },
+    { id: 5002, clientId: 5, date: "2024-07-30", rating: 4, type: "Project Completion", text: "Summer campaign was solid. Good creative, strong CTRs. Would like faster turnaround on copy revisions next time." },
+    { id: 5003, clientId: 5, date: "2024-10-05", rating: 3, type: "Monthly Review", text: "Quiet month as expected between seasonal campaigns. Keeping the relationship warm." },
+
+    // SkyBridge Consulting
+    { id: 6001, clientId: 6, date: "2025-01-15", rating: 3, type: "Status Update", text: "Pausing campaigns due to internal restructuring. Not a reflection of agency performance. Expect to resume in March." },
+    { id: 6002, clientId: 6, date: "2024-07-20", rating: 5, type: "Project Completion", text: "Thought leadership sequence brought in 38 high-quality consulting leads. Excellent copywriting." },
+    { id: 6003, clientId: 6, date: "2024-05-10", rating: 4, type: "Monthly Review", text: "Consistent quality. Appreciate the detailed monthly reports and proactive optimization suggestions." },
+
+    // Apex Fintech (churned)
+    { id: 7001, clientId: 7, date: "2024-11-15", rating: 2, type: "Exit Feedback", text: "Had to cut marketing budget by 60%. Campaign results were good but we simply can't afford external agencies right now. May return in future." },
+    { id: 7002, clientId: 7, date: "2024-10-20", rating: 4, type: "Campaign Review", text: "Banking API launch generated solid leads. Good work on the webinar integration." },
+    { id: 7003, clientId: 7, date: "2024-05-28", rating: 4, type: "Project Completion", text: "Fintech founders outreach delivered 56 conversions. Pleased with the targeting accuracy." },
+    { id: 7004, clientId: 7, date: "2024-03-10", rating: 5, type: "Monthly Review", text: "Really impressed with the depth of analytics. The weekly reports are exactly what we need." },
+
+    // ClearView Analytics
+    { id: 8001, clientId: 8, date: "2025-02-17", rating: 5, type: "Campaign Review", text: "Data platform launch campaign is performing at top tier. 44 conversions already with 50% left to go. Your team's data-driven approach resonates with our audience." },
+    { id: 8002, clientId: 8, date: "2024-12-01", rating: 5, type: "Project Completion", text: "Analytics Summit promotion drove 62 registrations from cold outreach. Exceeded our target by 2x." },
+    { id: 8003, clientId: 8, date: "2024-07-15", rating: 4, type: "Monthly Review", text: "Reliable and consistent. The automated reporting saves us hours each week." },
+
+    // UrbanNest Realty (lead)
+    { id: 9001, clientId: 9, date: "2025-02-05", rating: 4, type: "Discovery Call", text: "Great initial conversation. The agency understands real estate marketing challenges. Proposal looks strong." },
+
+    // Pulse Digital
+    { id: 10001, clientId: 10, date: "2025-02-10", rating: 4, type: "Onboarding", text: "White-label setup process is well-documented. Looking forward to sending test campaigns next week." },
+];
+
+// =============================================================================
+// HELPERS
+// =============================================================================
+function fmtNum(n) { return n.toLocaleString(); }
+function fmtMoney(n) { return '$' + n.toLocaleString(); }
+function fmtDate(d) {
+    return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+function daysAgo(d) {
+    const diff = Math.floor((new Date() - new Date(d)) / 86400000);
+    if (diff === 0) return 'Today';
+    if (diff === 1) return 'Yesterday';
+    if (diff < 7) return diff + 'd ago';
+    if (diff < 30) return Math.floor(diff / 7) + 'w ago';
+    return Math.floor(diff / 30) + 'mo ago';
+}
+function initials(name) {
+    return name.split(' ').map(w => w[0]).join('').substring(0, 2).toUpperCase();
+}
+function avgRating(clientId) {
+    const fb = FEEDBACK.filter(f => f.clientId === clientId);
+    if (!fb.length) return 0;
+    return fb.reduce((s, f) => s + f.rating, 0) / fb.length;
+}
+function stars(rating) {
+    let s = '';
+    for (let i = 1; i <= 5; i++) {
+        s += `<span class="star${i > Math.round(rating) ? ' empty' : ''}">&#9733;</span>`;
+    }
+    return s;
+}
+
+function getClientProjects(clientId) { return PROJECTS.filter(p => p.clientId === clientId); }
+function getClientFeedback(clientId) { return FEEDBACK.filter(f => f.clientId === clientId).sort((a, b) => new Date(b.date) - new Date(a.date)); }
+
+function projectStatusColor(status) {
+    const map = { active: '--accent-green', planning: '--accent-blue', paused: '--accent-yellow', completed: '--accent-purple' };
+    return `var(${map[status] || '--text-muted'})`;
+}
+
+function projectStatusPill(status) {
+    const cls = { active: 'status-active', planning: 'status-onboarding', paused: 'status-paused', completed: 'status-lead' };
+    return `<span class="status-pill ${cls[status] || ''}">${status}</span>`;
+}
+
+// =============================================================================
+// RENDER SUMMARY
+// =============================================================================
+function renderSummary() {
+    const active = CLIENTS.filter(c => c.status === 'active').length;
+    const onboarding = CLIENTS.filter(c => c.status === 'onboarding').length;
+    const paused = CLIENTS.filter(c => c.status === 'paused').length;
+    const churned = CLIENTS.filter(c => c.status === 'churned').length;
+    const revenue = CLIENTS.reduce((s, c) => s + c.retainer, 0);
+
+    document.getElementById('summary-strip').innerHTML = `
+        <div class="summary-item">
+            <div class="label">Total Clients</div>
+            <div class="value" style="color:var(--text-primary);">${CLIENTS.length}</div>
+        </div>
+        <div class="summary-item">
+            <div class="label">Active</div>
+            <div class="value" style="color:var(--accent-green);">${active}</div>
+        </div>
+        <div class="summary-item">
+            <div class="label">Onboarding</div>
+            <div class="value" style="color:var(--accent-blue);">${onboarding}</div>
+        </div>
+        <div class="summary-item">
+            <div class="label">Paused</div>
+            <div class="value" style="color:var(--accent-yellow);">${paused}</div>
+        </div>
+        <div class="summary-item">
+            <div class="label">Churned</div>
+            <div class="value" style="color:var(--accent-red);">${churned}</div>
+        </div>
+        <div class="summary-item">
+            <div class="label">Monthly Revenue</div>
+            <div class="value" style="color:var(--accent-cyan);">${fmtMoney(revenue)}</div>
+        </div>
+    `;
+}
+
+// =============================================================================
+// RENDER CLIENT TABLE
+// =============================================================================
+let currentFilter = 'all';
+let currentSearch = '';
+let selectedClientId = null;
+
+function filteredClients() {
+    return CLIENTS.filter(c => {
+        if (currentFilter !== 'all' && c.status !== currentFilter) return false;
+        if (currentSearch && !c.name.toLowerCase().includes(currentSearch) && !c.contact.toLowerCase().includes(currentSearch)) return false;
+        return true;
+    });
+}
+
+function renderTable() {
+    const tbody = document.getElementById('client-table-body');
+    const clients = filteredClients();
+
+    tbody.innerHTML = clients.map(c => {
+        const projects = getClientProjects(c.id);
+        const rating = avgRating(c.id);
+        return `
+            <tr data-id="${c.id}" class="${selectedClientId === c.id ? 'selected' : ''}" onclick="openPeek(${c.id})">
+                <td>
+                    <div class="client-name">
+                        <div class="client-avatar" style="background:${c.color};">${initials(c.name)}</div>
+                        <div>
+                            <div>${c.name}</div>
+                            <div style="font-weight:400;font-size:12px;color:var(--text-muted);">${c.contact}</div>
+                        </div>
+                    </div>
+                </td>
+                <td><span class="status-pill status-${c.status}">${c.status}</span></td>
+                <td class="num">${projects.length}</td>
+                <td>${rating > 0 ? stars(rating) : '<span style="color:var(--text-muted);">—</span>'}</td>
+                <td class="num">${c.retainer > 0 ? fmtMoney(c.retainer) + '/mo' : '—'}</td>
+                <td style="color:var(--text-secondary);">${fmtDate(c.since)}</td>
+                <td style="color:var(--text-secondary);">${daysAgo(c.lastActivity)}</td>
+            </tr>
+        `;
+    }).join('');
+}
+
+// =============================================================================
+// SIDE PEEK
+// =============================================================================
+let currentTab = 'overview';
+
+function openPeek(clientId) {
+    selectedClientId = clientId;
+    currentTab = 'overview';
+    const panel = document.getElementById('peek-panel');
+    const overlay = document.getElementById('peek-overlay');
+    const page = document.getElementById('main-page');
+
+    panel.classList.add('open');
+    overlay.classList.add('open');
+    page.classList.add('peek-open');
+
+    renderPeekHeader(clientId);
+    renderPeekTabs();
+    renderPeekBody(clientId);
+    renderTable();
+}
+
+function closePeek() {
+    selectedClientId = null;
+    document.getElementById('peek-panel').classList.remove('open');
+    document.getElementById('peek-overlay').classList.remove('open');
+    document.getElementById('main-page').classList.remove('peek-open');
+    renderTable();
+}
+
+function renderPeekHeader(clientId) {
+    const c = CLIENTS.find(cl => cl.id === clientId);
+    document.getElementById('peek-header').innerHTML = `
+        <div class="peek-avatar" style="background:${c.color};">${initials(c.name)}</div>
+        <div class="peek-title-block">
+            <div class="peek-title">${c.name}</div>
+            <div class="peek-subtitle">${c.contact} &middot; ${c.industry} &middot; <span class="status-pill status-${c.status}" style="font-size:10px;padding:2px 8px;">${c.status}</span></div>
+        </div>
+        <button class="peek-close" onclick="closePeek()">&times;</button>
+    `;
+}
+
+function renderPeekTabs() {
+    document.querySelectorAll('.peek-tab').forEach(tab => {
+        tab.classList.toggle('active', tab.dataset.tab === currentTab);
+    });
+}
+
+function renderPeekBody(clientId) {
+    const body = document.getElementById('peek-body');
+    const c = CLIENTS.find(cl => cl.id === clientId);
+    const projects = getClientProjects(clientId);
+    const feedback = getClientFeedback(clientId);
+
+    if (currentTab === 'overview') {
+        const totalSent = projects.reduce((s, p) => s + p.sent, 0);
+        const totalConversions = projects.reduce((s, p) => s + p.conversions, 0);
+        const totalReplied = projects.reduce((s, p) => s + p.replied, 0);
+        const rating = avgRating(clientId);
+
+        body.innerHTML = `
+            <div class="peek-section">
+                <div class="peek-section-title">Key Metrics</div>
+                <div class="peek-kpi-row">
+                    <div class="peek-kpi">
+                        <div class="pk-value" style="color:var(--accent-blue);">${fmtNum(totalSent)}</div>
+                        <div class="pk-label">Total Sent</div>
+                    </div>
+                    <div class="peek-kpi">
+                        <div class="pk-value" style="color:var(--accent-green);">${fmtNum(totalReplied)}</div>
+                        <div class="pk-label">Total Replies</div>
+                    </div>
+                    <div class="peek-kpi">
+                        <div class="pk-value" style="color:var(--accent-orange);">${totalConversions}</div>
+                        <div class="pk-label">Conversions</div>
+                    </div>
+                </div>
+                <div class="peek-kpi-row">
+                    <div class="peek-kpi">
+                        <div class="pk-value" style="color:var(--accent-cyan);">${projects.length}</div>
+                        <div class="pk-label">Projects</div>
+                    </div>
+                    <div class="peek-kpi">
+                        <div class="pk-value" style="color:var(--accent-yellow);">${rating > 0 ? rating.toFixed(1) : '—'}</div>
+                        <div class="pk-label">Avg Rating</div>
+                    </div>
+                    <div class="peek-kpi">
+                        <div class="pk-value" style="color:var(--accent-purple);">${feedback.length}</div>
+                        <div class="pk-label">Feedback</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="peek-section">
+                <div class="peek-section-title">Client Details</div>
+                <div class="peek-info-grid">
+                    <div class="peek-info-item">
+                        <div class="pi-label">Email</div>
+                        <div class="pi-value">${c.email}</div>
+                    </div>
+                    <div class="peek-info-item">
+                        <div class="pi-label">Industry</div>
+                        <div class="pi-value">${c.industry}</div>
+                    </div>
+                    <div class="peek-info-item">
+                        <div class="pi-label">Monthly Retainer</div>
+                        <div class="pi-value">${c.retainer > 0 ? fmtMoney(c.retainer) : '—'}</div>
+                    </div>
+                    <div class="peek-info-item">
+                        <div class="pi-label">Client Since</div>
+                        <div class="pi-value">${fmtDate(c.since)}</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="peek-section">
+                <div class="peek-section-title">Notes</div>
+                <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:14px;font-size:13px;color:var(--text-secondary);line-height:1.6;">
+                    ${c.notes}
+                </div>
+            </div>
+
+            <div class="peek-section">
+                <div class="peek-section-title">Latest Feedback</div>
+                ${feedback.length > 0 ? `
+                    <div class="feedback-item">
+                        <div class="feedback-header">
+                            <div class="feedback-rating">${stars(feedback[0].rating)}</div>
+                            <div class="feedback-date">${fmtDate(feedback[0].date)}</div>
+                        </div>
+                        <div class="feedback-text">${feedback[0].text}</div>
+                        <span class="feedback-type">${feedback[0].type}</span>
+                    </div>
+                ` : '<div class="empty-state">No feedback yet</div>'}
+            </div>
+
+            <div class="peek-section">
+                <div class="peek-section-title">Active Projects</div>
+                ${projects.filter(p => p.status === 'active' || p.status === 'planning').map(p => `
+                    <div class="project-card">
+                        <div class="project-card-header">
+                            <div class="project-name">${p.name}</div>
+                            ${projectStatusPill(p.status)}
+                        </div>
+                        <div class="project-meta">
+                            <span>${p.type}</span>
+                            <span>${fmtDate(p.startDate)} — ${fmtDate(p.endDate)}</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div class="progress-fill" style="width:${p.progress}%;background:${projectStatusColor(p.status)};"></div>
+                        </div>
+                        <div class="progress-label">
+                            <span>${p.progress}% complete</span>
+                            <span>${fmtNum(p.conversions)} conversions</span>
+                        </div>
+                    </div>
+                `).join('') || '<div class="empty-state">No active projects</div>'}
+            </div>
+        `;
+    }
+
+    else if (currentTab === 'projects') {
+        body.innerHTML = `
+            <div class="peek-section">
+                <div class="peek-section-title">All Projects (${projects.length})</div>
+                ${projects.length > 0 ? projects.sort((a, b) => new Date(b.startDate) - new Date(a.startDate)).map(p => `
+                    <div class="project-card">
+                        <div class="project-card-header">
+                            <div class="project-name">${p.name}</div>
+                            ${projectStatusPill(p.status)}
+                        </div>
+                        <div class="project-meta">
+                            <span>${p.type}</span>
+                            <span>${fmtDate(p.startDate)} — ${fmtDate(p.endDate)}</span>
+                            <span>Budget: ${fmtMoney(p.budget)}</span>
+                        </div>
+                        <div class="progress-bar" style="margin-bottom:10px;">
+                            <div class="progress-fill" style="width:${p.progress}%;background:${projectStatusColor(p.status)};"></div>
+                        </div>
+                        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;">
+                            <div style="text-align:center;">
+                                <div style="font-size:16px;font-weight:700;color:var(--accent-blue);">${fmtNum(p.sent)}</div>
+                                <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;">Sent</div>
+                            </div>
+                            <div style="text-align:center;">
+                                <div style="font-size:16px;font-weight:700;color:var(--accent-purple);">${fmtNum(p.opened)}</div>
+                                <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;">Opened</div>
+                            </div>
+                            <div style="text-align:center;">
+                                <div style="font-size:16px;font-weight:700;color:var(--accent-green);">${fmtNum(p.replied)}</div>
+                                <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;">Replied</div>
+                            </div>
+                            <div style="text-align:center;">
+                                <div style="font-size:16px;font-weight:700;color:var(--accent-orange);">${p.conversions}</div>
+                                <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;">Converted</div>
+                            </div>
+                        </div>
+                    </div>
+                `).join('') : '<div class="empty-state">No projects yet</div>'}
+            </div>
+        `;
+    }
+
+    else if (currentTab === 'feedback') {
+        body.innerHTML = `
+            <div class="peek-section">
+                <div class="peek-section-title">All Feedback (${feedback.length})</div>
+                ${feedback.length > 0 ? feedback.map(f => `
+                    <div class="feedback-item">
+                        <div class="feedback-header">
+                            <div class="feedback-rating">${stars(f.rating)}</div>
+                            <div class="feedback-date">${fmtDate(f.date)}</div>
+                        </div>
+                        <div class="feedback-text">${f.text}</div>
+                        <span class="feedback-type">${f.type}</span>
+                    </div>
+                `).join('') : '<div class="empty-state">No feedback yet</div>'}
+            </div>
+        `;
+    }
+
+    else if (currentTab === 'history') {
+        // Merge projects and feedback into a unified timeline
+        const events = [];
+
+        projects.forEach(p => {
+            events.push({ date: p.startDate, type: 'project-start', text: `Project started: ${p.name}`, color: 'var(--accent-blue)' });
+            if (p.status === 'completed') {
+                events.push({ date: p.endDate, type: 'project-end', text: `Project completed: ${p.name} — ${p.conversions} conversions`, color: 'var(--accent-green)' });
+            }
+            if (p.status === 'paused') {
+                events.push({ date: p.endDate, type: 'project-paused', text: `Project paused: ${p.name}`, color: 'var(--accent-yellow)' });
+            }
+        });
+
+        feedback.forEach(f => {
+            events.push({ date: f.date, type: 'feedback', text: `${f.type}: "${f.text.substring(0, 80)}${f.text.length > 80 ? '...' : ''}" — ${f.rating}/5`, color: 'var(--accent-purple)' });
+        });
+
+        events.push({ date: c.since, type: 'client', text: `Client relationship started`, color: 'var(--accent-cyan)' });
+
+        if (c.status === 'churned') {
+            events.push({ date: c.lastActivity, type: 'churned', text: 'Client churned', color: 'var(--accent-red)' });
+        }
+
+        events.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+        body.innerHTML = `
+            <div class="peek-section">
+                <div class="peek-section-title">Complete History (${events.length} events)</div>
+                ${events.map(e => `
+                    <div class="timeline-item">
+                        <div class="timeline-dot" style="background:${e.color};"></div>
+                        <div class="timeline-content">
+                            <div class="timeline-text">${e.text}</div>
+                            <div class="timeline-date">${fmtDate(e.date)}</div>
+                        </div>
+                    </div>
+                `).join('')}
+            </div>
+        `;
+    }
+}
+
+// =============================================================================
+// EVENT LISTENERS
+// =============================================================================
+document.getElementById('search').addEventListener('input', (e) => {
+    currentSearch = e.target.value.toLowerCase();
+    renderTable();
+});
+
+document.querySelectorAll('.filter-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentFilter = btn.dataset.filter;
+        renderTable();
+    });
+});
+
+document.querySelectorAll('.peek-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+        currentTab = tab.dataset.tab;
+        renderPeekTabs();
+        if (selectedClientId) renderPeekBody(selectedClientId);
+    });
+});
+
+document.getElementById('peek-overlay').addEventListener('click', closePeek);
+
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closePeek();
+});
+
+// =============================================================================
+// INIT
+// =============================================================================
+renderSummary();
+renderTable();
+</script>
+</body>
+</html>
