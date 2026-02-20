@@ -2,6 +2,26 @@
 // GOOGLE SHEETS API — Fetch spreadsheet metadata and data
 // ============================================================================
 const SheetsAPI = {
+
+    // Lightweight check: returns the spreadsheet's last modified timestamp
+    // using the Google Drive API (1 tiny call instead of fetching all sheets).
+    // Requires the Google Drive API to be enabled in Google Cloud Console
+    // (same project as the Sheets API).
+    //
+    // FUTURE (server): This method is replaced by an SSE event from our server.
+    // The server will use a Service Account or Apps Script trigger to detect
+    // changes and push them — this client-side check goes away entirely.
+    async getModifiedTime(apiKey, spreadsheetId) {
+        const url = `https://www.googleapis.com/drive/v3/files/${spreadsheetId}?fields=modifiedTime&key=${encodeURIComponent(apiKey)}`;
+        const res = await fetch(url);
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error?.message || `Drive API Error ${res.status}`);
+        }
+        const data = await res.json();
+        return data.modifiedTime || null;
+    },
+
     async getSpreadsheetMeta(apiKey, spreadsheetId) {
         const url = `${CONFIG.API_BASE}/${spreadsheetId}?key=${encodeURIComponent(apiKey)}&fields=sheets.properties.title,properties.title`;
         const res = await fetch(url);
