@@ -4,6 +4,7 @@
 const AutoRefresh = {
     _timerId: null,
     _lastFingerprint: null,
+    _isRefreshing: false,   // prevents overlapping fetches
 
     fingerprint(allRecords, clientMap) {
         const parts = [allRecords.length];
@@ -25,11 +26,30 @@ const AutoRefresh = {
         const { apiKey, spreadsheetId } = Store.state;
         if (!apiKey || !spreadsheetId) return;
 
+        // Prevent overlapping fetches (e.g. 57 sheets taking > 30s)
+        if (this._isRefreshing) {
+            console.log('[AutoRefresh] Previous refresh still running — skipping');
+            return;
+        }
+
+        this._isRefreshing = true;
+
         try {
             const { spreadsheetTitle, sheetNames, allSheetData } = await SheetsAPI.fetchAll(
                 apiKey, spreadsheetId, null
             );
             const { allRecords, clientMap } = DataEngine.parseAll(allSheetData);
+
+            // Safety guard: never replace good data with empty/degraded data.
+            // If the new fetch returns no records but we currently have data,
+            // it means something went wrong (rate limit, network blip) — skip.
+            const currentRecordCount = Store.state.allRecords.length;
+            if (allRecords.length === 0 && currentRecordCount > 0) {
+                console.warn('[AutoRefresh] Fetch returned 0 records — keeping existing data');
+                this._updateStatusTime();
+                return;
+            }
+
             const newFingerprint = this.fingerprint(allRecords, clientMap);
 
             this._updateStatusTime();
@@ -45,6 +65,9 @@ const AutoRefresh = {
             const filterOptions = DataEngine.getFilterOptions(allRecords, clientMap);
             const { currentView, currentClient, filters } = Store.state;
 
+            // Store.update() triggers the subscriber in app.js which calls
+            // renderDashboard(). Do NOT call render functions manually here
+            // to avoid double-rendering.
             Store.update({
                 spreadsheetTitle,
                 sheetNames,
@@ -55,13 +78,11 @@ const AutoRefresh = {
                 dataLoaded: true,
             });
 
-            renderNavigation();
-            renderFilterBar();
-            renderDashboard();
-
             showToast('Data updated automatically', 'success');
         } catch (err) {
             console.warn('[AutoRefresh] Silent refresh failed:', err.message);
+        } finally {
+            this._isRefreshing = false;
         }
     },
 
