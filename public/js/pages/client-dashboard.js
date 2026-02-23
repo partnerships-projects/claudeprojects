@@ -14,6 +14,16 @@ function renderClientDashboard() {
 
     let html = `<div class="fade-in">`;
 
+    // Back button
+    html += `
+        <button class="btn-back-to-clients" id="btn-back-clients">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M9.53 11.53a.75.75 0 0 1-1.06 0l-3-3a.75.75 0 0 1 0-1.06l3-3a.75.75 0 1 1 1.06 1.06L7.06 8l2.47 2.47a.75.75 0 0 1 0 1.06z"/>
+            </svg>
+            All Clients
+        </button>
+    `;
+
     // Client header
     html += `
         <div class="client-header">
@@ -169,6 +179,11 @@ function renderClientDashboard() {
 
     html += `</div>`;
     content.innerHTML = html;
+
+    // Back to directory
+    document.getElementById('btn-back-clients')?.addEventListener('click', () => {
+        Store.setView('clients');
+    });
 
     // Render charts + set up interactive tables
     requestAnimationFrame(() => {

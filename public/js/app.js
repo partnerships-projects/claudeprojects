@@ -10,10 +10,26 @@ const renderDashboard = debounce(() => {
 
     const emptyEl = document.getElementById('empty-state');
     const contentEl = document.getElementById('dashboard-content');
+    const filterBarEl = document.getElementById('filter-bar');
+
+    // Client directory doesn't use filters or empty-state
+    if (currentView === 'clients') {
+        emptyEl?.classList.add('hidden');
+        contentEl?.classList.remove('hidden');
+        filterBarEl?.classList.add('hidden');
+        renderClientDirectory();
+        renderNavigation();
+        return;
+    }
+
+    // Show filter bar for master & client views
+    filterBarEl?.classList.remove('hidden');
 
     if (filteredRecords.length === 0) {
         emptyEl?.classList.remove('hidden');
         contentEl?.classList.add('hidden');
+        renderNavigation();
+        renderFilterBar();
         return;
     }
 
