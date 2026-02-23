@@ -3,52 +3,43 @@
 // ============================================================================
 function renderSentimentHTML(metrics) {
     const total = metrics.totalPositive + metrics.totalNegative + metrics.totalComplex;
+    const pctPos = total > 0 ? (metrics.totalPositive / total * 100) : 0;
+    const pctNeg = total > 0 ? (metrics.totalNegative / total * 100) : 0;
+    const pctCpx = total > 0 ? (metrics.totalComplex / total * 100) : 0;
 
     return `
-        <div class="sentiment-pills">
-            <div class="pill pill-positive">
-                <div class="pill-count">${fmtNum(metrics.totalPositive)}</div>
-                <div class="pill-label">Positive</div>
-                <div class="pill-rate">${fmtPct(safeDivide(metrics.totalPositive, total))}</div>
-            </div>
-            <div class="pill pill-negative">
-                <div class="pill-count">${fmtNum(metrics.totalNegative)}</div>
-                <div class="pill-label">Negative</div>
-                <div class="pill-rate">${fmtPct(safeDivide(metrics.totalNegative, total))}</div>
-            </div>
-            <div class="pill pill-complex">
-                <div class="pill-count">${fmtNum(metrics.totalComplex)}</div>
-                <div class="pill-label">Complex</div>
-                <div class="pill-rate">${fmtPct(safeDivide(metrics.totalComplex, total))}</div>
-            </div>
+        <div style="text-align:center; margin-bottom:18px;">
+            <div style="font-size:36px; font-weight:800; letter-spacing:-1px; font-variant-numeric:tabular-nums;">${fmtNum(total)}</div>
+            <div style="font-size:11px; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.5px;">Total Replies</div>
         </div>
-        <div style="margin-top: 16px;">
-            <div class="chart-container sm">
-                <canvas id="chart-sentiment-donut"></canvas>
+        <div class="sentiment-bar-stack">
+            ${pctPos > 0 ? `<div class="sentiment-bar-seg seg-positive" style="width:${pctPos}%" title="Positive: ${fmtNum(metrics.totalPositive)} (${pctPos.toFixed(1)}%)"><span>${pctPos >= 8 ? fmtNum(metrics.totalPositive) : ''}</span></div>` : ''}
+            ${pctNeg > 0 ? `<div class="sentiment-bar-seg seg-negative" style="width:${pctNeg}%" title="Negative: ${fmtNum(metrics.totalNegative)} (${pctNeg.toFixed(1)}%)"><span>${pctNeg >= 8 ? fmtNum(metrics.totalNegative) : ''}</span></div>` : ''}
+            ${pctCpx > 0 ? `<div class="sentiment-bar-seg seg-complex" style="width:${pctCpx}%" title="Complex: ${fmtNum(metrics.totalComplex)} (${pctCpx.toFixed(1)}%)"><span>${pctCpx >= 8 ? fmtNum(metrics.totalComplex) : ''}</span></div>` : ''}
+        </div>
+        <div class="sentiment-legend">
+            <div class="sentiment-legend-item">
+                <span class="sentiment-dot" style="background:#34d399"></span>
+                <span class="sentiment-legend-label">Positive</span>
+                <span class="sentiment-legend-value">${fmtNum(metrics.totalPositive)}</span>
+                <span class="sentiment-legend-pct">${fmtPct(safeDivide(metrics.totalPositive, total))}</span>
+            </div>
+            <div class="sentiment-legend-item">
+                <span class="sentiment-dot" style="background:#f87171"></span>
+                <span class="sentiment-legend-label">Negative</span>
+                <span class="sentiment-legend-value">${fmtNum(metrics.totalNegative)}</span>
+                <span class="sentiment-legend-pct">${fmtPct(safeDivide(metrics.totalNegative, total))}</span>
+            </div>
+            <div class="sentiment-legend-item">
+                <span class="sentiment-dot" style="background:#fbbf24"></span>
+                <span class="sentiment-legend-label">Complex</span>
+                <span class="sentiment-legend-value">${fmtNum(metrics.totalComplex)}</span>
+                <span class="sentiment-legend-pct">${fmtPct(safeDivide(metrics.totalComplex, total))}</span>
             </div>
         </div>
     `;
 }
 
 function renderSentimentChart(metrics) {
-    Charts.create('chart-sentiment-donut', {
-        type: 'doughnut',
-        data: {
-            labels: ['Positive', 'Negative', 'Complex'],
-            datasets: [{
-                data: [metrics.totalPositive, metrics.totalNegative, metrics.totalComplex],
-                backgroundColor: ['#34d399', '#f87171', '#fbbf24'],
-                borderWidth: 0,
-                hoverOffset: 6,
-            }]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            cutout: '62%',
-            plugins: {
-                legend: { position: 'bottom', labels: { padding: 12 } },
-            },
-        },
-    });
+    // Sentiment is now rendered as a stacked bar + legend (no canvas needed)
 }

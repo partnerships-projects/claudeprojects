@@ -54,36 +54,38 @@ function renderClientComparisonTable(records) {
         const isBest = m.conversionRate === bestConv && bestConv > 0;
         return `
             <tr class="${isBest ? 'highlight-row' : ''}">
-                <td class="name-col">${escapeHtml(c.name)}</td>
-                <td class="num">${fmtNum(m.totalSent)}</td>
-                <td class="num">${fmtPct(m.openRate)}</td>
-                <td class="num">${fmtPct(m.replyRate)}</td>
-                <td class="num" style="color:var(--positive)">${fmtPct(m.positiveRate)}</td>
-                <td class="num">${fmtPct(m.conversionRate)}</td>
-                <td class="num">${fmtPct(m.positiveConversionRate)}</td>
-                <td class="num" style="font-weight:700">${fmtNum(m.totalConverted)}</td>
+                <td class="name-col" data-sort-value="${escapeHtml(c.name)}">${escapeHtml(c.name)}</td>
+                <td class="num" data-sort-value="${m.totalSent}">${fmtNum(m.totalSent)}</td>
+                <td class="num" data-sort-value="${m.openRate}">${fmtPct(m.openRate)}</td>
+                <td class="num" data-sort-value="${m.replyRate}">${fmtPct(m.replyRate)}</td>
+                <td class="num" data-sort-value="${m.positiveRate}" style="color:var(--positive)">${fmtPct(m.positiveRate)}</td>
+                <td class="num" data-sort-value="${m.conversionRate}">${fmtPct(m.conversionRate)}</td>
+                <td class="num" data-sort-value="${m.positiveConversionRate}">${fmtPct(m.positiveConversionRate)}</td>
+                <td class="num" data-sort-value="${m.totalConverted}" style="font-weight:700">${fmtNum(m.totalConverted)}</td>
                 <td>${isBest ? '<span class="table-badge badge-best">Top</span>' : ''}</td>
             </tr>
         `;
     }).join('');
 
     return `
-        <table class="data-table">
-            <thead>
-                <tr>
-                    <th>Client</th>
-                    <th>Sent</th>
-                    <th>Open Rate</th>
-                    <th>Reply Rate</th>
-                    <th>Positive %</th>
-                    <th>Conv. Rate</th>
-                    <th>Pos&rarr;Conv</th>
-                    <th>Conversions</th>
-                    <th></th>
-                </tr>
-            </thead>
-            <tbody>${rows}</tbody>
-        </table>
+        <div class="table-scroll-container">
+            <table class="data-table sortable-table">
+                <thead>
+                    <tr>
+                        <th class="sortable-th" data-sort-key="0">Client <span class="sort-arrow"></span></th>
+                        <th class="sortable-th" data-sort-key="1">Sent <span class="sort-arrow"></span></th>
+                        <th class="sortable-th" data-sort-key="2">Open Rate <span class="sort-arrow"></span></th>
+                        <th class="sortable-th" data-sort-key="3">Reply Rate <span class="sort-arrow"></span></th>
+                        <th class="sortable-th" data-sort-key="4">Positive % <span class="sort-arrow"></span></th>
+                        <th class="sortable-th" data-sort-key="5">Conv. Rate <span class="sort-arrow"></span></th>
+                        <th class="sortable-th" data-sort-key="6">Pos&rarr;Conv <span class="sort-arrow"></span></th>
+                        <th class="sortable-th" data-sort-key="7">Conversions <span class="sort-arrow"></span></th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>
+        </div>
     `;
 }
 

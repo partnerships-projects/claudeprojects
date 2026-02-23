@@ -71,62 +71,76 @@
     flex-shrink: 0;
 }
 
-/* ==================== SENTIMENT ==================== */
-.sentiment-pills {
+/* ==================== SENTIMENT STACKED BAR ==================== */
+.sentiment-bar-stack {
     display: flex;
+    height: 36px;
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    margin-bottom: 18px;
+}
+
+.sentiment-bar-seg {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    transition: width 0.5s ease;
+}
+
+.sentiment-bar-seg span {
+    font-size: 12px;
+    font-weight: 700;
+    color: #fff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding: 0 6px;
+}
+
+.seg-positive { background: #34d399; }
+.seg-negative { background: #f87171; }
+.seg-complex  { background: #fbbf24; }
+
+/* ==================== SENTIMENT LEGEND ==================== */
+.sentiment-legend {
+    display: flex;
+    flex-direction: column;
     gap: 10px;
 }
 
-.pill {
+.sentiment-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.sentiment-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.sentiment-legend-label {
+    font-size: 13px;
+    color: var(--text-secondary);
     flex: 1;
-    text-align: center;
-    padding: 14px 10px;
-    border-radius: var(--radius-md);
-    border: 1px solid;
 }
 
-.pill-positive {
-    background: rgba(52, 211, 153, 0.06);
-    border-color: rgba(52, 211, 153, 0.15);
-}
-
-.pill-negative {
-    background: rgba(248, 113, 113, 0.06);
-    border-color: rgba(248, 113, 113, 0.15);
-}
-
-.pill-complex {
-    background: rgba(251, 191, 36, 0.06);
-    border-color: rgba(251, 191, 36, 0.15);
-}
-
-.pill .pill-count {
-    font-size: 26px;
-    font-weight: 800;
-    letter-spacing: -0.5px;
+.sentiment-legend-value {
+    font-size: 14px;
+    font-weight: 700;
     font-variant-numeric: tabular-nums;
+    color: var(--text-primary);
 }
 
-.pill .pill-label {
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.6px;
-    font-weight: 600;
-    margin-top: 2px;
+.sentiment-legend-pct {
+    font-size: 12px;
+    color: var(--text-muted);
+    width: 48px;
+    text-align: right;
 }
-
-.pill .pill-rate {
-    font-size: 11px;
-    margin-top: 4px;
-    font-weight: 500;
-}
-
-.pill-positive .pill-count { color: var(--positive); }
-.pill-negative .pill-count { color: var(--negative); }
-.pill-complex .pill-count { color: var(--neutral); }
-.pill-positive .pill-label, .pill-positive .pill-rate { color: rgba(52, 211, 153, 0.6); }
-.pill-negative .pill-label, .pill-negative .pill-rate { color: rgba(248, 113, 113, 0.6); }
-.pill-complex .pill-label, .pill-complex .pill-rate { color: rgba(251, 191, 36, 0.6); }
 
 /* ==================== TOAST ==================== */
 .toast-container {
