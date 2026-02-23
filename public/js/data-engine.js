@@ -125,7 +125,6 @@ const DataEngine = {
             record._goal = (record.goal || '').toString().trim();
             record._servers = (record.servers || '').toString().trim();
             record._cs = (record.cs || '').toString().trim();
-            record._owner = (record.owner || '').toString().trim();
             record._month = (record.month || '').toString().trim();
 
             records.push(record);
@@ -181,7 +180,8 @@ const DataEngine = {
         records.forEach(r => {
             if (r._type) types.add(r._type);
             if (r._targetAudience) audiences.add(r._targetAudience);
-            if (r._owner) owners.add(r._owner);
+            if (r._teamLeader) owners.add(r._teamLeader);
+            if (r._cs) owners.add(r._cs);
             if (r._date) {
                 if (!minDate || r._date < minDate) minDate = r._date;
                 if (!maxDate || r._date > maxDate) maxDate = r._date;

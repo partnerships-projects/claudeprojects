@@ -36,9 +36,9 @@ const FilterEngine = {
             result = result.filter(r => r._targetAudience === filters.audience);
         }
 
-        // Owner
+        // Owner (matches Team Leader or CS)
         if (filters.owner !== 'all') {
-            result = result.filter(r => r._owner === filters.owner);
+            result = result.filter(r => r._teamLeader === filters.owner || r._cs === filters.owner);
         }
 
         return result;
