@@ -174,6 +174,7 @@ const DataEngine = {
         const types = new Set();
         const audiences = new Set();
         const owners = new Set();
+        const copies = new Set();
         let minDate = null;
         let maxDate = null;
 
@@ -182,6 +183,7 @@ const DataEngine = {
             if (r._targetAudience) audiences.add(r._targetAudience);
             if (r._teamLeader) owners.add(r._teamLeader);
             if (r._cs) owners.add(r._cs);
+            if (r._copyUsed) copies.add(r._copyUsed);
             if (r._date) {
                 if (!minDate || r._date < minDate) minDate = r._date;
                 if (!maxDate || r._date > maxDate) maxDate = r._date;
@@ -193,6 +195,7 @@ const DataEngine = {
             types: [...types].sort(),
             audiences: [...audiences].sort(),
             owners: [...owners].sort(),
+            copies: [...copies].sort(),
             minDate,
             maxDate,
         };

@@ -10,7 +10,7 @@ const Store = {
         allRecords: [],
         filteredRecords: [],
         clientMap: {},
-        filterOptions: { clients: [], types: [], audiences: [], owners: [], minDate: null, maxDate: null },
+        filterOptions: { clients: [], types: [], audiences: [], owners: [], copies: [], minDate: null, maxDate: null },
         filters: {
             dateFrom: '',
             dateTo: '',
@@ -18,6 +18,7 @@ const Store = {
             type: 'all',
             audience: 'all',
             owner: 'all',
+            copy: 'all',
         },
         currentView: 'master',
         currentClient: null,
@@ -49,7 +50,7 @@ const Store = {
     },
 
     resetFilters() {
-        this.state.filters = { dateFrom: '', dateTo: '', client: 'all', type: 'all', audience: 'all', owner: 'all' };
+        this.state.filters = { dateFrom: '', dateTo: '', client: 'all', type: 'all', audience: 'all', owner: 'all', copy: 'all' };
         this.state.filteredRecords = FilterEngine.apply(this.state.allRecords, this.state.filters, this.state.currentView, this.state.currentClient);
         this.notify();
     },

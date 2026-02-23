@@ -41,6 +41,11 @@ const FilterEngine = {
             result = result.filter(r => r._teamLeader === filters.owner || r._cs === filters.owner);
         }
 
+        // Copy used
+        if (filters.copy !== 'all') {
+            result = result.filter(r => r._copyUsed === filters.copy);
+        }
+
         return result;
     },
 };

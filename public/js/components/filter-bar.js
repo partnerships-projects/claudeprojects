@@ -5,24 +5,33 @@ function renderFilterBar() {
     const el = document.getElementById('filter-bar');
     const { filterOptions, filters, currentView, filteredRecords, allRecords } = Store.state;
 
-    const totalForView = currentView === 'client' && Store.state.currentClient
-        ? allRecords.filter(r => r._sheet === Store.state.currentClient).length
-        : allRecords.length;
+    // Determine the record pool for computing dropdown options.
+    // On a client page, scope everything to that client's records only.
+    const isClientView = currentView === 'client' && Store.state.currentClient;
+    const baseRecords = isClientView
+        ? allRecords.filter(r => r._sheet === Store.state.currentClient)
+        : allRecords;
+
+    const totalForView = baseRecords.length;
+
+    // Build scoped filter option lists
+    const opts = isClientView ? _scopedOptions(baseRecords) : filterOptions;
 
     let html = `
         <div class="filter-group">
             <span class="filter-label">From</span>
             <input type="date" class="filter-input" id="filter-date-from" value="${filters.dateFrom}"
-                ${filterOptions.minDate ? `min="${filterOptions.minDate.toISOString().slice(0, 10)}"` : ''}>
+                ${opts.minDate ? `min="${opts.minDate.toISOString().slice(0, 10)}"` : ''}>
         </div>
         <div class="filter-group">
             <span class="filter-label">To</span>
             <input type="date" class="filter-input" id="filter-date-to" value="${filters.dateTo}"
-                ${filterOptions.maxDate ? `max="${filterOptions.maxDate.toISOString().slice(0, 10)}"` : ''}>
+                ${opts.maxDate ? `max="${opts.maxDate.toISOString().slice(0, 10)}"` : ''}>
         </div>
         <div class="filter-separator"></div>
     `;
 
+    // Client filter — only on master view
     if (currentView === 'master' && filterOptions.clients.length > 1) {
         html += `
             <div class="filter-group">
@@ -35,37 +44,49 @@ function renderFilterBar() {
         `;
     }
 
-    if (filterOptions.types.length > 1) {
+    if (opts.types.length > 1) {
         html += `
             <div class="filter-group">
                 <span class="filter-label">Type</span>
                 <select class="filter-select" id="filter-type">
                     <option value="all">All Types</option>
-                    ${filterOptions.types.map(t => `<option value="${escapeHtml(t)}" ${filters.type === t ? 'selected' : ''}>${escapeHtml(t)}</option>`).join('')}
+                    ${opts.types.map(t => `<option value="${escapeHtml(t)}" ${filters.type === t ? 'selected' : ''}>${escapeHtml(t)}</option>`).join('')}
                 </select>
             </div>
         `;
     }
 
-    if (filterOptions.audiences.length > 1) {
+    if (opts.audiences.length > 1) {
         html += `
             <div class="filter-group">
                 <span class="filter-label">Audience</span>
                 <select class="filter-select" id="filter-audience">
                     <option value="all">All Audiences</option>
-                    ${filterOptions.audiences.map(a => `<option value="${escapeHtml(a)}" ${filters.audience === a ? 'selected' : ''}>${escapeHtml(a)}</option>`).join('')}
+                    ${opts.audiences.map(a => `<option value="${escapeHtml(a)}" ${filters.audience === a ? 'selected' : ''}>${escapeHtml(a)}</option>`).join('')}
                 </select>
             </div>
         `;
     }
 
-    if (filterOptions.owners.length > 0) {
+    if (opts.owners.length > 0) {
         html += `
             <div class="filter-group">
                 <span class="filter-label">Owner</span>
                 <select class="filter-select" id="filter-owner">
                     <option value="all">All Owners</option>
-                    ${filterOptions.owners.map(o => `<option value="${escapeHtml(o)}" ${filters.owner === o ? 'selected' : ''}>${escapeHtml(o)}</option>`).join('')}
+                    ${opts.owners.map(o => `<option value="${escapeHtml(o)}" ${filters.owner === o ? 'selected' : ''}>${escapeHtml(o)}</option>`).join('')}
+                </select>
+            </div>
+        `;
+    }
+
+    if (opts.copies.length > 1) {
+        html += `
+            <div class="filter-group">
+                <span class="filter-label">Copy</span>
+                <select class="filter-select" id="filter-copy">
+                    <option value="all">All Copies</option>
+                    ${opts.copies.map(c => `<option value="${escapeHtml(c)}" ${filters.copy === c ? 'selected' : ''}>${escapeHtml(c)}</option>`).join('')}
                 </select>
             </div>
         `;
@@ -88,7 +109,40 @@ function renderFilterBar() {
     bind('filter-type', 'type');
     bind('filter-audience', 'audience');
     bind('filter-owner', 'owner');
+    bind('filter-copy', 'copy');
 
     const resetBtn = document.getElementById('filter-reset-btn');
     if (resetBtn) resetBtn.addEventListener('click', () => Store.resetFilters());
+}
+
+// Build filter option lists scoped to a subset of records
+function _scopedOptions(records) {
+    const types = new Set();
+    const audiences = new Set();
+    const owners = new Set();
+    const copies = new Set();
+    let minDate = null;
+    let maxDate = null;
+
+    records.forEach(r => {
+        if (r._type) types.add(r._type);
+        if (r._targetAudience) audiences.add(r._targetAudience);
+        if (r._teamLeader) owners.add(r._teamLeader);
+        if (r._cs) owners.add(r._cs);
+        if (r._copyUsed) copies.add(r._copyUsed);
+        if (r._date) {
+            if (!minDate || r._date < minDate) minDate = r._date;
+            if (!maxDate || r._date > maxDate) maxDate = r._date;
+        }
+    });
+
+    return {
+        clients: [],
+        types: [...types].sort(),
+        audiences: [...audiences].sort(),
+        owners: [...owners].sort(),
+        copies: [...copies].sort(),
+        minDate,
+        maxDate,
+    };
 }
