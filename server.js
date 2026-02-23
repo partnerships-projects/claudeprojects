@@ -504,9 +504,107 @@ async function fetchAllSequences() {
     return results;
 }
 
+// ── Scheduled daily refresh at 8 AM ──────────────────────────────────────────
+
+let cachedSequences = null;
+let lastFetchTime = null;
+
+async function refreshCache() {
+    const now = new Date();
+    console.log(`  [${now.toLocaleTimeString()}] Refreshing data from SalesHandy...`);
+    try {
+        cachedSequences = await fetchAllSequences();
+        lastFetchTime = now;
+        console.log(`  [${now.toLocaleTimeString()}] Done — ${cachedSequences.length} active sequences cached.`);
+    } catch (err) {
+        console.log(`  [${now.toLocaleTimeString()}] Error refreshing: ${err.message}`);
+    }
+}
+
+function scheduleDaily8AM() {
+    const now = new Date();
+    const next8AM = new Date(now);
+    next8AM.setHours(8, 0, 0, 0);
+    if (now >= next8AM) {
+        next8AM.setDate(next8AM.getDate() + 1);
+    }
+    const msUntil = next8AM - now;
+    const hoursUntil = (msUntil / 3600000).toFixed(1);
+    console.log(`  Next auto-refresh: ${next8AM.toLocaleString()} (in ${hoursUntil}h)`);
+
+    setTimeout(() => {
+        refreshCache();
+        // Then repeat every 24 hours
+        setInterval(refreshCache, 24 * 60 * 60 * 1000);
+    }, msUntil);
+}
+
+// Override the /api/sequences route to use cache when available
+const originalCreateServer = server;
+
+// Patch: replace the server handler to serve cached data
+const patchedServer = http.createServer(async (req, res) => {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+
+    if (url.pathname === '/' || url.pathname === '/index.html') {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(getHTML());
+        return;
+    }
+
+    if (url.pathname === '/api/sequences') {
+        try {
+            // Use cache if fresh (less than 1 hour old), otherwise fetch live
+            let sequences;
+            if (cachedSequences && lastFetchTime && (Date.now() - lastFetchTime < 3600000)) {
+                sequences = cachedSequences;
+            } else {
+                sequences = await fetchAllSequences();
+                cachedSequences = sequences;
+                lastFetchTime = new Date();
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+                sequences,
+                lastUpdated: lastFetchTime ? lastFetchTime.toISOString() : null,
+            }));
+        } catch (err) {
+            // Serve stale cache if available
+            if (cachedSequences) {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({
+                    sequences: cachedSequences,
+                    lastUpdated: lastFetchTime ? lastFetchTime.toISOString() : null,
+                    warning: 'Serving cached data — live fetch failed: ' + err.message,
+                }));
+            } else {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: err.message }));
+            }
+        }
+        return;
+    }
+
+    if (url.pathname === '/api/refresh') {
+        refreshCache();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'refresh started' }));
+        return;
+    }
+
+    if (url.pathname.startsWith('/proxy/')) {
+        const targetPath = url.pathname.replace('/proxy', '') + url.search;
+        proxySaleshandy(targetPath, res);
+        return;
+    }
+
+    res.writeHead(404, { 'Content-Type': 'text/plain' });
+    res.end('Not found');
+});
+
 // ── Start ────────────────────────────────────────────────────────────────────
 
-server.listen(PORT, '0.0.0.0', () => {
+patchedServer.listen(PORT, '0.0.0.0', async () => {
     const os = require('os');
     const interfaces = os.networkInterfaces();
     const ips = [];
@@ -520,18 +618,26 @@ server.listen(PORT, '0.0.0.0', () => {
     }
 
     console.log();
-    console.log('  ┌─────────────────────────────────────────────────┐');
-    console.log('  │  SalesHandy — Uncontacted Prospects Dashboard   │');
-    console.log('  ├─────────────────────────────────────────────────┤');
-    console.log(`  │  Local:   http://localhost:${PORT}                │`);
+    console.log('  ┌─────────────────────────────────────────────────────┐');
+    console.log('  │  SalesHandy — Uncontacted Prospects Dashboard       │');
+    console.log('  ├─────────────────────────────────────────────────────┤');
+    console.log(`  │  Local:   http://localhost:${PORT}                    │`);
     if (ips.length > 0) {
         for (const ip of ips) {
             const line = `  │  Network: http://${ip}:${PORT}`;
-            console.log(line + ' '.repeat(Math.max(0, 52 - line.length)) + '│');
+            console.log(line + ' '.repeat(Math.max(0, 56 - line.length)) + '│');
         }
     }
-    console.log('  ├─────────────────────────────────────────────────┤');
-    console.log('  │  Share the Network URL with your team!          │');
-    console.log('  └─────────────────────────────────────────────────┘');
+    console.log('  ├─────────────────────────────────────────────────────┤');
+    console.log('  │  Share the Network URL with your team!              │');
+    console.log('  │  Data refreshes automatically every day at 8:00 AM  │');
+    console.log('  │  Server starts automatically when your PC boots     │');
+    console.log('  └─────────────────────────────────────────────────────┘');
     console.log();
+
+    // Fetch data immediately on startup
+    await refreshCache();
+
+    // Schedule daily refresh at 8 AM
+    scheduleDaily8AM();
 });
