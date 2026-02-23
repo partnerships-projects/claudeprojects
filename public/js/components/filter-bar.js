@@ -133,7 +133,8 @@ function renderFilterBar() {
 
 function _multiSelectHTML(key, label, options, selected) {
     const count = selected.length;
-    const btnLabel = count === 0 ? `All ${label}s` : `${label} (${count})`;
+    const plural = label === 'Copy' ? 'Copies' : `${label}s`;
+    const btnLabel = count === 0 ? `All ${plural}` : `${label} (${count})`;
 
     let itemsHtml = `
         <button class="ms-deselect" data-ms-key="${key}">Deselect All</button>

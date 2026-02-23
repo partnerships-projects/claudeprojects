@@ -230,6 +230,11 @@
     white-space: nowrap;
 }
 
+.data-table th:first-child,
+.data-table td:first-child {
+    text-align: left;
+}
+
 /* Sticky headers inside scroll container */
 .table-scroll-container .data-table thead th {
     position: sticky;
@@ -472,17 +477,22 @@
 }
 
 .flatpickr-current-month .flatpickr-monthDropdown-months {
-    background: var(--bg-surface);
-    color: var(--text-primary);
+    background: var(--bg-surface) !important;
+    color: #fff !important;
     font-weight: 600;
     border: none;
     appearance: none;
     -webkit-appearance: none;
+    -moz-appearance: none;
 }
 
 .flatpickr-current-month .flatpickr-monthDropdown-months option {
     background: var(--bg-card);
-    color: var(--text-primary);
+    color: #fff;
+}
+
+.flatpickr-current-month .numInputWrapper .cur-year {
+    color: #fff !important;
 }
 
 .flatpickr-current-month input.cur-year {
