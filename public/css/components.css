@@ -219,7 +219,7 @@
 }
 
 .data-table th {
-    text-align: left;
+    text-align: center;
     font-size: 10px;
     color: var(--text-muted);
     text-transform: uppercase;
@@ -273,6 +273,7 @@
     font-size: 13px;
     border-bottom: 1px solid rgba(35, 40, 66, 0.4);
     color: var(--text-primary);
+    text-align: center;
 }
 
 .data-table tbody tr {
@@ -290,7 +291,6 @@
 .data-table .num {
     font-variant-numeric: tabular-nums;
     font-weight: 600;
-    text-align: right;
 }
 
 .data-table .name-col {
@@ -478,6 +478,11 @@
     border: none;
     appearance: none;
     -webkit-appearance: none;
+}
+
+.flatpickr-current-month .flatpickr-monthDropdown-months option {
+    background: var(--bg-card);
+    color: var(--text-primary);
 }
 
 .flatpickr-current-month input.cur-year {

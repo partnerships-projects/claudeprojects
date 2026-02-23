@@ -225,6 +225,96 @@
     white-space: nowrap;
 }
 
+/* ==================== MULTI-SELECT DROPDOWN ==================== */
+.filter-ms-wrap {
+    position: relative;
+}
+
+.ms-trigger {
+    text-align: left;
+    cursor: pointer;
+}
+
+.ms-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: 4px;
+    min-width: 220px;
+    max-height: 280px;
+    overflow-y: auto;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    box-shadow: 0 12px 36px rgba(0,0,0,0.35);
+    z-index: 200;
+    padding: 6px 0;
+}
+
+.ms-dropdown::-webkit-scrollbar {
+    width: 5px;
+}
+
+.ms-dropdown::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.ms-dropdown::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 3px;
+}
+
+.ms-deselect {
+    display: block;
+    width: calc(100% - 12px);
+    margin: 0 6px 4px;
+    padding: 6px 10px;
+    font-family: var(--font);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--accent-red);
+    background: rgba(248, 113, 113, 0.06);
+    border: 1px solid rgba(248, 113, 113, 0.15);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    text-align: center;
+    transition: all var(--transition-fast);
+}
+
+.ms-deselect:hover {
+    background: rgba(248, 113, 113, 0.12);
+    border-color: rgba(248, 113, 113, 0.3);
+}
+
+.ms-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 12px;
+    font-size: 12px;
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: background var(--transition-fast);
+}
+
+.ms-option:hover {
+    background: var(--bg-surface);
+}
+
+.ms-option input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
+    accent-color: var(--accent-blue);
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.ms-option span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 /* ==================== DASHBOARD CONTENT ==================== */
 .dashboard-content {
     padding: 24px 28px 48px;

@@ -31,9 +31,10 @@ const FilterEngine = {
             result = result.filter(r => r._type === filters.type);
         }
 
-        // Target audience
-        if (filters.audience !== 'all') {
-            result = result.filter(r => r._targetAudience === filters.audience);
+        // Target audience (multi-select: empty array = all)
+        if (filters.audience.length > 0) {
+            const set = new Set(filters.audience);
+            result = result.filter(r => set.has(r._targetAudience));
         }
 
         // Owner (matches Team Leader or CS)
@@ -41,9 +42,10 @@ const FilterEngine = {
             result = result.filter(r => r._teamLeader === filters.owner || r._cs === filters.owner);
         }
 
-        // Copy used
-        if (filters.copy !== 'all') {
-            result = result.filter(r => r._copyUsed === filters.copy);
+        // Copy used (multi-select: empty array = all)
+        if (filters.copy.length > 0) {
+            const set = new Set(filters.copy);
+            result = result.filter(r => set.has(r._copyUsed));
         }
 
         return result;

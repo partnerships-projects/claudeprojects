@@ -5,16 +5,12 @@ function renderFilterBar() {
     const el = document.getElementById('filter-bar');
     const { filterOptions, filters, currentView, filteredRecords, allRecords } = Store.state;
 
-    // Determine the record pool for computing dropdown options.
-    // On a client page, scope everything to that client's records only.
     const isClientView = currentView === 'client' && Store.state.currentClient;
     const baseRecords = isClientView
         ? allRecords.filter(r => r._sheet === Store.state.currentClient)
         : allRecords;
 
     const totalForView = baseRecords.length;
-
-    // Build scoped filter option lists
     const opts = isClientView ? _scopedOptions(baseRecords) : filterOptions;
 
     let html = `
@@ -31,7 +27,7 @@ function renderFilterBar() {
         <div class="filter-separator"></div>
     `;
 
-    // Client filter — only on master view
+    // Client — single select, master only
     if (currentView === 'master' && filterOptions.clients.length > 1) {
         html += `
             <div class="filter-group">
@@ -44,6 +40,7 @@ function renderFilterBar() {
         `;
     }
 
+    // Type — single select
     if (opts.types.length > 1) {
         html += `
             <div class="filter-group">
@@ -56,18 +53,12 @@ function renderFilterBar() {
         `;
     }
 
+    // Audience — multi-select
     if (opts.audiences.length > 1) {
-        html += `
-            <div class="filter-group">
-                <span class="filter-label">Audience</span>
-                <select class="filter-select" id="filter-audience">
-                    <option value="all">All Audiences</option>
-                    ${opts.audiences.map(a => `<option value="${escapeHtml(a)}" ${filters.audience === a ? 'selected' : ''}>${escapeHtml(a)}</option>`).join('')}
-                </select>
-            </div>
-        `;
+        html += _multiSelectHTML('audience', 'Audience', opts.audiences, filters.audience);
     }
 
+    // Owner — single select
     if (opts.owners.length > 0) {
         html += `
             <div class="filter-group">
@@ -80,16 +71,9 @@ function renderFilterBar() {
         `;
     }
 
+    // Copy — multi-select
     if (opts.copies.length > 1) {
-        html += `
-            <div class="filter-group">
-                <span class="filter-label">Copy</span>
-                <select class="filter-select" id="filter-copy">
-                    <option value="all">All Copies</option>
-                    ${opts.copies.map(c => `<option value="${escapeHtml(c)}" ${filters.copy === c ? 'selected' : ''}>${escapeHtml(c)}</option>`).join('')}
-                </select>
-            </div>
-        `;
+        html += _multiSelectHTML('copy', 'Copy', opts.copies, filters.copy);
     }
 
     html += `
@@ -99,17 +83,20 @@ function renderFilterBar() {
 
     el.innerHTML = html;
 
+    // --- Bind single-selects ---
     const bind = (id, key) => {
         const input = document.getElementById(id);
         if (input) input.addEventListener('change', () => Store.setFilter(key, input.value));
     };
     bind('filter-client', 'client');
     bind('filter-type', 'type');
-    bind('filter-audience', 'audience');
     bind('filter-owner', 'owner');
-    bind('filter-copy', 'copy');
 
-    // Flatpickr calendar pickers
+    // --- Bind multi-selects ---
+    _initMultiSelect('audience');
+    _initMultiSelect('copy');
+
+    // --- Flatpickr ---
     const fpOpts = {
         dateFormat: 'Y-m-d',
         altInput: true,
@@ -142,7 +129,85 @@ function renderFilterBar() {
     if (resetBtn) resetBtn.addEventListener('click', () => Store.resetFilters());
 }
 
-// Build filter option lists scoped to a subset of records
+// ==================== Multi-select helpers ====================
+
+function _multiSelectHTML(key, label, options, selected) {
+    const count = selected.length;
+    const btnLabel = count === 0 ? `All ${label}s` : `${label} (${count})`;
+
+    let itemsHtml = `
+        <button class="ms-deselect" data-ms-key="${key}">Deselect All</button>
+    `;
+    options.forEach(val => {
+        const checked = selected.includes(val) ? 'checked' : '';
+        itemsHtml += `
+            <label class="ms-option">
+                <input type="checkbox" value="${escapeHtml(val)}" ${checked}>
+                <span>${escapeHtml(val)}</span>
+            </label>
+        `;
+    });
+
+    return `
+        <div class="filter-group filter-ms-wrap" data-ms="${key}">
+            <span class="filter-label">${label}</span>
+            <button class="filter-select ms-trigger" id="ms-btn-${key}">${escapeHtml(btnLabel)}</button>
+            <div class="ms-dropdown hidden" id="ms-dd-${key}">
+                ${itemsHtml}
+            </div>
+        </div>
+    `;
+}
+
+function _initMultiSelect(key) {
+    const wrap = document.querySelector(`.filter-ms-wrap[data-ms="${key}"]`);
+    if (!wrap) return;
+
+    const btn = wrap.querySelector('.ms-trigger');
+    const dd = wrap.querySelector('.ms-dropdown');
+
+    // Toggle dropdown
+    btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        // Close other open dropdowns
+        document.querySelectorAll('.ms-dropdown').forEach(d => {
+            if (d !== dd) d.classList.add('hidden');
+        });
+        dd.classList.toggle('hidden');
+    });
+
+    // Checkbox changes
+    dd.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+        cb.addEventListener('change', () => {
+            _applyMultiSelect(key, wrap);
+        });
+    });
+
+    // Deselect all
+    const deselectBtn = dd.querySelector('.ms-deselect');
+    if (deselectBtn) {
+        deselectBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            dd.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
+            _applyMultiSelect(key, wrap);
+        });
+    }
+
+    // Close on outside click
+    document.addEventListener('click', (e) => {
+        if (!wrap.contains(e.target)) {
+            dd.classList.add('hidden');
+        }
+    });
+}
+
+function _applyMultiSelect(key, wrap) {
+    const checked = [...wrap.querySelectorAll('input[type="checkbox"]:checked')].map(cb => cb.value);
+    Store.setFilter(key, checked);
+}
+
+// ==================== Scoped options ====================
+
 function _scopedOptions(records) {
     const types = new Set();
     const audiences = new Set();

@@ -25,6 +25,10 @@ function renderSummaryStrip(metrics) {
                 <div class="s-value text-red">${fmtNum(metrics.totalNegative)}</div>
             </div>
             <div class="summary-item">
+                <div class="s-label">Complex</div>
+                <div class="s-value text-yellow">${fmtNum(metrics.totalComplex)}</div>
+            </div>
+            <div class="summary-item">
                 <div class="s-label">Conversions</div>
                 <div class="s-value text-orange">${fmtNum(metrics.totalConverted)}</div>
             </div>
