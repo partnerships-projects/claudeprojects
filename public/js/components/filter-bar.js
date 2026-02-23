@@ -20,13 +20,13 @@ function renderFilterBar() {
     let html = `
         <div class="filter-group">
             <span class="filter-label">From</span>
-            <input type="date" class="filter-input" id="filter-date-from" value="${filters.dateFrom}"
-                ${opts.minDate ? `min="${opts.minDate.toISOString().slice(0, 10)}"` : ''}>
+            <input type="text" class="filter-input filter-datepicker" id="filter-date-from"
+                value="${filters.dateFrom}" placeholder="Start date" readonly>
         </div>
         <div class="filter-group">
             <span class="filter-label">To</span>
-            <input type="date" class="filter-input" id="filter-date-to" value="${filters.dateTo}"
-                ${opts.maxDate ? `max="${opts.maxDate.toISOString().slice(0, 10)}"` : ''}>
+            <input type="text" class="filter-input filter-datepicker" id="filter-date-to"
+                value="${filters.dateTo}" placeholder="End date" readonly>
         </div>
         <div class="filter-separator"></div>
     `;
@@ -103,13 +103,40 @@ function renderFilterBar() {
         const input = document.getElementById(id);
         if (input) input.addEventListener('change', () => Store.setFilter(key, input.value));
     };
-    bind('filter-date-from', 'dateFrom');
-    bind('filter-date-to', 'dateTo');
     bind('filter-client', 'client');
     bind('filter-type', 'type');
     bind('filter-audience', 'audience');
     bind('filter-owner', 'owner');
     bind('filter-copy', 'copy');
+
+    // Flatpickr calendar pickers
+    const fpOpts = {
+        dateFormat: 'Y-m-d',
+        altInput: true,
+        altFormat: 'M j, Y',
+        allowInput: false,
+        disableMobile: true,
+        ...(opts.minDate ? { minDate: opts.minDate } : {}),
+        ...(opts.maxDate ? { maxDate: opts.maxDate } : {}),
+    };
+
+    const fromEl = document.getElementById('filter-date-from');
+    const toEl = document.getElementById('filter-date-to');
+
+    if (fromEl) {
+        flatpickr(fromEl, {
+            ...fpOpts,
+            defaultDate: filters.dateFrom || null,
+            onChange(sel, dateStr) { Store.setFilter('dateFrom', dateStr); },
+        });
+    }
+    if (toEl) {
+        flatpickr(toEl, {
+            ...fpOpts,
+            defaultDate: filters.dateTo || null,
+            onChange(sel, dateStr) { Store.setFilter('dateTo', dateStr); },
+        });
+    }
 
     const resetBtn = document.getElementById('filter-reset-btn');
     if (resetBtn) resetBtn.addEventListener('click', () => Store.resetFilters());
