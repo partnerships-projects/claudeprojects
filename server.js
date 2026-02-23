@@ -287,21 +287,34 @@ async function fetchData() {
 
     try {
         const res = await fetch('/api/sequences');
-        if (!res.ok) throw new Error('Server returned ' + res.status);
-        const data = await res.json();
+        let data;
+        try { data = await res.json(); } catch (_) {
+            throw new Error('Server returned ' + res.status + ' (non-JSON response)');
+        }
+        if (!res.ok) {
+            throw new Error(data.error || 'Server returned ' + res.status);
+        }
 
+        if (data.warning) {
+            setStatus('info', data.warning);
+        }
         if (data.error) throw new Error(data.error);
         if (!data.sequences || data.sequences.length === 0) {
-            setStatus('error', 'No active sequences found.');
+            setStatus('error', 'No active sequences found. Try http://localhost:${PORT}/api/test to diagnose.');
             return;
         }
 
         renderResults(data.sequences);
         const now = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        document.getElementById('last-updated').textContent = 'Last updated: ' + now;
-        setStatus('success', 'Loaded ' + data.sequences.length + ' active sequences.');
+        const updatedText = data.lastUpdated
+            ? 'Data from: ' + new Date(data.lastUpdated).toLocaleString() + ' — Page loaded: ' + now
+            : 'Last updated: ' + now;
+        document.getElementById('last-updated').textContent = updatedText;
+        if (!data.warning) {
+            setStatus('success', 'Loaded ' + data.sequences.length + ' active sequences.');
+        }
     } catch (err) {
-        setStatus('error', 'Error: ' + err.message);
+        setStatus('error', 'Error: ' + err.message + '. Visit /api/test to diagnose your API connection.');
     } finally {
         document.getElementById('loader').classList.remove('active');
         btn.disabled = false;
@@ -357,43 +370,9 @@ setAutoRefresh();
 
 // ── Server routes ────────────────────────────────────────────────────────────
 
-const server = http.createServer(async (req, res) => {
-    const url = new URL(req.url, `http://${req.headers.host}`);
-
-    // Serve the dashboard
-    if (url.pathname === '/' || url.pathname === '/index.html') {
-        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-        res.end(getHTML());
-        return;
-    }
-
-    // API: fetch all active sequences with not-contacted counts
-    if (url.pathname === '/api/sequences') {
-        try {
-            const sequences = await fetchAllSequences();
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ sequences }));
-        } catch (err) {
-            res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: err.message }));
-        }
-        return;
-    }
-
-    // Proxy raw SalesHandy API calls (for debugging)
-    if (url.pathname.startsWith('/proxy/')) {
-        const targetPath = url.pathname.replace('/proxy', '') + url.search;
-        proxySaleshandy(targetPath, res);
-        return;
-    }
-
-    res.writeHead(404, { 'Content-Type': 'text/plain' });
-    res.end('Not found');
-});
-
 // ── SalesHandy data fetching ─────────────────────────────────────────────────
 
-function saleshandyGet(urlPath) {
+function saleshandyGetOnce(urlPath) {
     return new Promise((resolve, reject) => {
         const url = new URL(urlPath, SALESHANDY_BASE);
         const options = {
@@ -412,17 +391,37 @@ function saleshandyGet(urlPath) {
             res.on('data', (chunk) => body += chunk);
             res.on('end', () => {
                 if (res.statusCode >= 400) {
-                    reject(new Error(`API ${res.statusCode}: ${body}`));
+                    let detail = body;
+                    try { detail = JSON.stringify(JSON.parse(body), null, 2); } catch (_) {}
+                    reject(new Error(`SalesHandy API ${res.statusCode} on ${urlPath}\n${detail}`));
                     return;
                 }
                 try { resolve(JSON.parse(body)); }
-                catch (e) { reject(new Error('Invalid JSON from API')); }
+                catch (e) { reject(new Error(`Invalid JSON from API on ${urlPath}: ${body.slice(0, 200)}`)); }
             });
         });
 
-        req.on('error', reject);
+        req.on('error', (err) => reject(new Error(`Network error on ${urlPath}: ${err.message}`)));
+        req.setTimeout(15000, () => { req.destroy(); reject(new Error(`Timeout on ${urlPath}`)); });
         req.end();
     });
+}
+
+async function saleshandyGet(urlPath, retries = 3) {
+    let lastErr;
+    for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+            return await saleshandyGetOnce(urlPath);
+        } catch (err) {
+            lastErr = err;
+            const isServerError = err.message.includes('API 5') || err.message.includes('Network error') || err.message.includes('Timeout');
+            if (!isServerError || attempt === retries) break;
+            const delay = Math.pow(2, attempt) * 1000; // 2s, 4s, 8s
+            console.log(`  [Retry] Attempt ${attempt}/${retries} failed for ${urlPath} — retrying in ${delay / 1000}s...`);
+            await new Promise(r => setTimeout(r, delay));
+        }
+    }
+    throw lastErr;
 }
 
 async function fetchAllSequences() {
@@ -539,22 +538,19 @@ function scheduleDaily8AM() {
     }, msUntil);
 }
 
-// Override the /api/sequences route to use cache when available
-const originalCreateServer = server;
-
-// Patch: replace the server handler to serve cached data
-const patchedServer = http.createServer(async (req, res) => {
+const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
 
+    // Serve the dashboard
     if (url.pathname === '/' || url.pathname === '/index.html') {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(getHTML());
         return;
     }
 
+    // API: sequences with caching
     if (url.pathname === '/api/sequences') {
         try {
-            // Use cache if fresh (less than 1 hour old), otherwise fetch live
             let sequences;
             if (cachedSequences && lastFetchTime && (Date.now() - lastFetchTime < 3600000)) {
                 sequences = cachedSequences;
@@ -569,7 +565,6 @@ const patchedServer = http.createServer(async (req, res) => {
                 lastUpdated: lastFetchTime ? lastFetchTime.toISOString() : null,
             }));
         } catch (err) {
-            // Serve stale cache if available
             if (cachedSequences) {
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({
@@ -585,6 +580,7 @@ const patchedServer = http.createServer(async (req, res) => {
         return;
     }
 
+    // API: force refresh
     if (url.pathname === '/api/refresh') {
         refreshCache();
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -592,6 +588,27 @@ const patchedServer = http.createServer(async (req, res) => {
         return;
     }
 
+    // API: diagnostic — test the SalesHandy connection
+    if (url.pathname === '/api/test') {
+        const results = {};
+        const testEndpoints = [
+            '/api/v1/sequences?page=1&limit=1',
+            '/api/v2/sequences?page=1&limit=1',
+        ];
+        for (const ep of testEndpoints) {
+            try {
+                const data = await saleshandyGetOnce(ep);
+                results[ep] = { status: 'ok', keys: Object.keys(data), sample: JSON.stringify(data).slice(0, 500) };
+            } catch (err) {
+                results[ep] = { status: 'error', message: err.message };
+            }
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ apiKey: API_KEY.slice(0, 6) + '...' + API_KEY.slice(-4), results }, null, 2));
+        return;
+    }
+
+    // Proxy raw SalesHandy API calls (for debugging)
     if (url.pathname.startsWith('/proxy/')) {
         const targetPath = url.pathname.replace('/proxy', '') + url.search;
         proxySaleshandy(targetPath, res);
@@ -604,7 +621,7 @@ const patchedServer = http.createServer(async (req, res) => {
 
 // ── Start ────────────────────────────────────────────────────────────────────
 
-patchedServer.listen(PORT, '0.0.0.0', async () => {
+server.listen(PORT, '0.0.0.0', async () => {
     const os = require('os');
     const interfaces = os.networkInterfaces();
     const ips = [];
