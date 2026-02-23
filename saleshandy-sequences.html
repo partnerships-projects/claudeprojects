@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Saleshandy — Sequence Uncontacted Prospects</title>
+    <style>
+        :root {
+            --bg-primary: #0f1117;
+            --bg-secondary: #1a1d29;
+            --bg-card: #1e2235;
+            --bg-card-hover: #252a40;
+            --border: #2a2f45;
+            --text-primary: #e8eaf0;
+            --text-secondary: #8b8fa3;
+            --text-muted: #5c6078;
+            --accent-blue: #4f8df5;
+            --accent-green: #34d399;
+            --accent-red: #f87171;
+            --accent-yellow: #fbbf24;
+            --accent-purple: #a78bfa;
+            --accent-cyan: #22d3ee;
+            --accent-orange: #fb923c;
+            --row-red-bg: rgba(248, 113, 113, 0.10);
+            --row-red-border: rgba(248, 113, 113, 0.25);
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            line-height: 1.5;
+        }
+
+        /* ── Layout ───────────────────────────────────────────── */
+        .page { max-width: 1100px; margin: 0 auto; padding: 40px 32px; }
+
+        .header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            margin-bottom: 32px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid var(--border);
+        }
+        .header h1 { font-size: 26px; font-weight: 700; letter-spacing: -0.4px; }
+        .header p { color: var(--text-secondary); font-size: 13px; margin-top: 4px; }
+
+        .date-badge {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 8px 16px;
+            font-size: 13px;
+            color: var(--text-secondary);
+            white-space: nowrap;
+        }
+
+        /* ── Config Panel ─────────────────────────────────────── */
+        .config-panel {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 24px;
+            margin-bottom: 28px;
+        }
+        .config-panel h2 {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            margin-bottom: 16px;
+        }
+        .config-row {
+            display: flex;
+            gap: 12px;
+            align-items: flex-end;
+            flex-wrap: wrap;
+        }
+        .config-field { flex: 1; min-width: 200px; }
+        .config-field label {
+            display: block;
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-bottom: 6px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .config-field input, .config-field select {
+            width: 100%;
+            padding: 10px 14px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text-primary);
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.15s;
+        }
+        .config-field input:focus, .config-field select:focus {
+            border-color: var(--accent-blue);
+        }
+
+        .btn {
+            padding: 10px 28px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.15s, opacity 0.15s;
+        }
+        .btn-primary { background: var(--accent-blue); color: #fff; }
+        .btn-primary:hover { opacity: 0.88; }
+        .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        /* ── Status Bar ───────────────────────────────────────── */
+        .status-bar {
+            padding: 12px 18px;
+            border-radius: 10px;
+            font-size: 13px;
+            margin-bottom: 24px;
+            display: none;
+        }
+        .status-bar.info {
+            display: block;
+            background: rgba(79, 141, 245, 0.10);
+            border: 1px solid rgba(79, 141, 245, 0.25);
+            color: var(--accent-blue);
+        }
+        .status-bar.error {
+            display: block;
+            background: rgba(248, 113, 113, 0.10);
+            border: 1px solid rgba(248, 113, 113, 0.25);
+            color: var(--accent-red);
+        }
+        .status-bar.success {
+            display: block;
+            background: rgba(52, 211, 153, 0.10);
+            border: 1px solid rgba(52, 211, 153, 0.25);
+            color: var(--accent-green);
+        }
+
+        /* ── Summary Strip ────────────────────────────────────── */
+        .summary-strip {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 28px;
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            padding: 16px 20px;
+            border: 1px solid var(--border);
+        }
+        .summary-item {
+            flex: 1;
+            text-align: center;
+            padding: 0 12px;
+            border-right: 1px solid var(--border);
+        }
+        .summary-item:last-child { border-right: none; }
+        .summary-item .label {
+            font-size: 11px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            margin-bottom: 4px;
+        }
+        .summary-item .value { font-size: 24px; font-weight: 700; }
+
+        /* ── Card ──────────────────────────────────────────────── */
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 24px;
+            margin-bottom: 28px;
+        }
+        .card-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            margin-bottom: 16px;
+        }
+
+        /* ── Warning Label ─────────────────────────────────────── */
+        .warning-label {
+            font-size: 15px;
+            font-weight: 700;
+            color: var(--accent-red);
+            margin-bottom: 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .warning-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent-red);
+            display: inline-block;
+        }
+
+        /* ── Table ─────────────────────────────────────────────── */
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .data-table th {
+            text-align: left;
+            font-size: 11px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            padding: 10px 14px;
+            border-bottom: 1px solid var(--border);
+            font-weight: 600;
+        }
+        .data-table td {
+            padding: 13px 14px;
+            font-size: 14px;
+            border-bottom: 1px solid rgba(42, 47, 69, 0.5);
+            color: var(--text-primary);
+        }
+        .data-table tbody tr:hover { background: rgba(79, 141, 245, 0.04); }
+        .data-table .num {
+            font-variant-numeric: tabular-nums;
+            font-weight: 600;
+            text-align: right;
+        }
+        .data-table .seq-name { font-weight: 500; }
+
+        /* Red row for < 2000 */
+        .data-table tr.row-red {
+            background: var(--row-red-bg);
+        }
+        .data-table tr.row-red td {
+            color: var(--accent-red);
+            border-bottom-color: var(--row-red-border);
+        }
+        .data-table tr.row-red:hover { background: rgba(248, 113, 113, 0.15); }
+
+        /* ── Loader ────────────────────────────────────────────── */
+        .loader {
+            display: none;
+            justify-content: center;
+            padding: 40px 0;
+        }
+        .loader.active { display: flex; }
+        .spinner {
+            width: 32px;
+            height: 32px;
+            border: 3px solid var(--border);
+            border-top-color: var(--accent-blue);
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* ── Hidden ────────────────────────────────────────────── */
+        .hidden { display: none !important; }
+
+        /* ── Responsive ────────────────────────────────────────── */
+        @media (max-width: 768px) {
+            .page { padding: 20px 16px; }
+            .header { flex-direction: column; gap: 12px; }
+            .config-row { flex-direction: column; }
+            .summary-strip { flex-direction: column; }
+            .summary-item {
+                border-right: none;
+                border-bottom: 1px solid var(--border);
+                padding: 10px 0;
+            }
+            .summary-item:last-child { border-bottom: none; }
+        }
+    </style>
+</head>
+<body>
+<div class="page">
+
+    <!-- Header -->
+    <div class="header">
+        <div>
+            <h1>Sequence — Uncontacted Prospects</h1>
+            <p>Saleshandy sequences &amp; their "Not Contacted" prospect counts</p>
+        </div>
+        <div class="date-badge" id="date-badge"></div>
+    </div>
+
+    <!-- Config Panel -->
+    <div class="config-panel" id="config-panel">
+        <h2>API Configuration</h2>
+        <div class="config-row">
+            <div class="config-field" style="flex:2;">
+                <label>API Key</label>
+                <input type="password" id="input-api-key" placeholder="Paste your Saleshandy API key" />
+            </div>
+            <div class="config-field" style="flex:1.5;">
+                <label>Base URL</label>
+                <select id="input-base-url">
+                    <option value="https://leo-open-api-gateway.saleshandy.com">leo-open-api-gateway.saleshandy.com</option>
+                    <option value="https://open-api.saleshandy.com">open-api.saleshandy.com</option>
+                </select>
+            </div>
+            <div class="config-field" style="flex:0.6; min-width: 100px;">
+                <label>Threshold</label>
+                <input type="number" id="input-threshold" value="2000" min="0" />
+            </div>
+            <button class="btn btn-primary" id="btn-fetch" onclick="fetchData()">Fetch Data</button>
+        </div>
+    </div>
+
+    <!-- Status -->
+    <div class="status-bar" id="status-bar"></div>
+
+    <!-- Loader -->
+    <div class="loader" id="loader"><div class="spinner"></div></div>
+
+    <!-- Results (hidden until data loads) -->
+    <div id="results" class="hidden">
+
+        <!-- Summary Strip -->
+        <div class="summary-strip">
+            <div class="summary-item">
+                <div class="label">Total Sequences</div>
+                <div class="value text-blue" id="s-total">—</div>
+            </div>
+            <div class="summary-item">
+                <div class="label">Total Not Contacted</div>
+                <div class="value" style="color:var(--accent-cyan);" id="s-uncontacted">—</div>
+            </div>
+            <div class="summary-item">
+                <div class="label">Below Threshold</div>
+                <div class="value" style="color:var(--accent-red);" id="s-below">—</div>
+            </div>
+            <div class="summary-item">
+                <div class="label">Above Threshold</div>
+                <div class="value" style="color:var(--accent-green);" id="s-above">—</div>
+            </div>
+        </div>
+
+        <!-- All Sequences Table -->
+        <div class="card">
+            <div class="card-title">All Sequences</div>
+            <table class="data-table" id="table-all">
+                <thead>
+                    <tr>
+                        <th style="width:40px;">#</th>
+                        <th>Sequence Name</th>
+                        <th style="text-align:right;">Not Contacted</th>
+                    </tr>
+                </thead>
+                <tbody id="tbody-all"></tbody>
+            </table>
+        </div>
+
+        <!-- Flagged Sequences Table -->
+        <div class="card" id="card-flagged">
+            <div class="warning-label">
+                <span class="warning-dot"></span>
+                Sequences that need more data:
+            </div>
+            <table class="data-table" id="table-flagged">
+                <thead>
+                    <tr>
+                        <th style="width:40px;">#</th>
+                        <th>Sequence Name</th>
+                        <th style="text-align:right;">Not Contacted</th>
+                    </tr>
+                </thead>
+                <tbody id="tbody-flagged"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+// ═════════════════════════════════════════════════════════════════════════════
+// SALESHANDY UNCONTACTED PROSPECTS — CLIENT MODULE
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// Portable module: to reuse in another project, copy the SaleshandyClient
+// class and the renderResults() function. Provide your own UI hooks.
+// ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Lightweight Saleshandy API client.
+ *
+ * Usage:
+ *   const client = new SaleshandyClient({ apiKey, baseUrl });
+ *   const sequences = await client.getSequences();
+ *
+ * The class is self-contained and can be extracted into its own file.
+ */
+class SaleshandyClient {
+    constructor({ apiKey, baseUrl }) {
+        this.apiKey = apiKey;
+        this.baseUrl = baseUrl.replace(/\/+$/, '');
+    }
+
+    async _request(path, params = {}) {
+        const url = new URL(path, this.baseUrl);
+        Object.entries(params).forEach(([k, v]) => {
+            if (v !== undefined && v !== null) url.searchParams.set(k, v);
+        });
+
+        const res = await fetch(url.toString(), {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${this.apiKey}`,
+                'Content-Type': 'application/json',
+            },
+        });
+
+        if (!res.ok) {
+            const body = await res.text().catch(() => '');
+            throw new Error(`API ${res.status}: ${res.statusText} — ${body}`);
+        }
+
+        return res.json();
+    }
+
+    /** Fetch all sequences (handles pagination automatically). */
+    async getSequences() {
+        const sequences = [];
+        let page = 1;
+        const limit = 100;
+
+        while (true) {
+            const data = await this._request('/api/v1/sequences', { page, limit });
+
+            // The API may return data in various shapes.
+            // We normalise to an array of sequences.
+            const items = data.data || data.sequences || data.items || data.results || [];
+            if (!Array.isArray(items) || items.length === 0) {
+                // If first page returned nothing, try the whole response as array
+                if (page === 1 && Array.isArray(data) && data.length > 0) {
+                    sequences.push(...data);
+                }
+                break;
+            }
+
+            sequences.push(...items);
+
+            // Stop if we received fewer items than the limit (last page)
+            if (items.length < limit) break;
+
+            // Safety cap to avoid infinite loops
+            if (page >= 50) break;
+
+            page++;
+        }
+
+        return sequences;
+    }
+
+    /**
+     * Get prospect counts for a sequence, specifically "Not Contacted".
+     * Tries multiple endpoint patterns since the exact API shape is
+     * not publicly documented outside the Swagger UI.
+     */
+    async getNotContactedCount(sequenceId) {
+        // Strategy 1: sequence detail might include counts directly
+        const detailPaths = [
+            `/api/v1/sequences/${sequenceId}`,
+            `/api/v1/sequence/${sequenceId}`,
+        ];
+
+        for (const path of detailPaths) {
+            try {
+                const data = await this._request(path);
+                const seq = data.data || data;
+
+                // Look for a notContacted / not_contacted count in the response
+                const count = seq.notContactedCount
+                    ?? seq.not_contacted_count
+                    ?? seq.notContacted
+                    ?? seq.not_contacted
+                    ?? seq.prospects?.notContacted
+                    ?? seq.prospects?.not_contacted
+                    ?? seq.stats?.notContacted
+                    ?? seq.stats?.not_contacted
+                    ?? seq.prospectStats?.notContacted
+                    ?? seq.prospectStats?.not_contacted;
+
+                if (count !== undefined && count !== null) return Number(count);
+            } catch (_) { /* try next */ }
+        }
+
+        // Strategy 2: prospect list endpoint with status filter
+        const prospectPaths = [
+            `/api/v1/sequences/${sequenceId}/prospects`,
+            `/api/v1/prospects`,
+        ];
+        const statusValues = ['NOT_CONTACTED', 'notContacted', 'not_contacted', 'Not Contacted', '0'];
+
+        for (const path of prospectPaths) {
+            for (const status of statusValues) {
+                try {
+                    const params = { status, limit: 1 };
+                    if (path === '/api/v1/prospects') {
+                        params.sequenceId = sequenceId;
+                    }
+                    const data = await this._request(path, params);
+                    const total = data.total
+                        ?? data.totalCount
+                        ?? data.total_count
+                        ?? data.meta?.total
+                        ?? data.pagination?.total;
+
+                    if (total !== undefined && total !== null) return Number(total);
+
+                    // Fallback: count items in the returned array
+                    const items = data.data || data.prospects || data.items || data.results || [];
+                    if (Array.isArray(items)) return items.length;
+                } catch (_) { /* try next */ }
+            }
+        }
+
+        return null; // Could not determine count
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// UI HELPERS
+// ═════════════════════════════════════════════════════════════════════════════
+
+function setStatus(type, message) {
+    const bar = document.getElementById('status-bar');
+    bar.className = 'status-bar ' + type;
+    bar.textContent = message;
+}
+
+function clearStatus() {
+    const bar = document.getElementById('status-bar');
+    bar.className = 'status-bar';
+    bar.textContent = '';
+}
+
+function showLoader(show) {
+    document.getElementById('loader').classList.toggle('active', show);
+}
+
+function fmtNum(n) {
+    if (n === null || n === undefined) return '—';
+    return Number(n).toLocaleString();
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// RENDER RESULTS
+// ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Takes an array of { name, notContactedCount } objects and renders
+ * the two tables + summary strip.  Portable — only depends on DOM ids.
+ */
+function renderResults(sequenceData, threshold) {
+    const results = document.getElementById('results');
+    results.classList.remove('hidden');
+
+    // Sort descending by count
+    sequenceData.sort((a, b) => (b.notContactedCount ?? -1) - (a.notContactedCount ?? -1));
+
+    const totalNotContacted = sequenceData.reduce((s, d) => s + (d.notContactedCount ?? 0), 0);
+    const belowThreshold = sequenceData.filter(d => d.notContactedCount !== null && d.notContactedCount < threshold);
+    const aboveThreshold = sequenceData.filter(d => d.notContactedCount !== null && d.notContactedCount >= threshold);
+
+    // Summary
+    document.getElementById('s-total').textContent = fmtNum(sequenceData.length);
+    document.getElementById('s-uncontacted').textContent = fmtNum(totalNotContacted);
+    document.getElementById('s-below').textContent = fmtNum(belowThreshold.length);
+    document.getElementById('s-above').textContent = fmtNum(aboveThreshold.length);
+
+    // ── All Sequences Table ──────────────────────────────────────
+    const tbodyAll = document.getElementById('tbody-all');
+    tbodyAll.innerHTML = sequenceData.map((d, i) => {
+        const isRed = d.notContactedCount !== null && d.notContactedCount < threshold;
+        return `<tr class="${isRed ? 'row-red' : ''}">
+            <td class="num">${i + 1}</td>
+            <td class="seq-name">${escapeHtml(d.name)}</td>
+            <td class="num">${fmtNum(d.notContactedCount)}</td>
+        </tr>`;
+    }).join('');
+
+    // ── Flagged Sequences Table ──────────────────────────────────
+    const cardFlagged = document.getElementById('card-flagged');
+    const tbodyFlagged = document.getElementById('tbody-flagged');
+
+    if (belowThreshold.length === 0) {
+        cardFlagged.classList.add('hidden');
+    } else {
+        cardFlagged.classList.remove('hidden');
+        tbodyFlagged.innerHTML = belowThreshold
+            .sort((a, b) => (a.notContactedCount ?? 0) - (b.notContactedCount ?? 0))
+            .map((d, i) => `<tr class="row-red">
+                <td class="num">${i + 1}</td>
+                <td class="seq-name">${escapeHtml(d.name)}</td>
+                <td class="num">${fmtNum(d.notContactedCount)}</td>
+            </tr>`).join('');
+    }
+}
+
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str ?? '';
+    return div.innerHTML;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// MAIN FETCH FLOW
+// ═════════════════════════════════════════════════════════════════════════════
+
+async function fetchData() {
+    const apiKey = document.getElementById('input-api-key').value.trim();
+    const baseUrl = document.getElementById('input-base-url').value;
+    const threshold = Number(document.getElementById('input-threshold').value) || 2000;
+
+    if (!apiKey) {
+        setStatus('error', 'Please enter your Saleshandy API key.');
+        return;
+    }
+
+    const btn = document.getElementById('btn-fetch');
+    btn.disabled = true;
+    document.getElementById('results').classList.add('hidden');
+    showLoader(true);
+    clearStatus();
+    setStatus('info', 'Connecting to Saleshandy API...');
+
+    try {
+        const client = new SaleshandyClient({ apiKey, baseUrl });
+
+        // 1. Fetch sequences
+        setStatus('info', 'Fetching sequences...');
+        const sequences = await client.getSequences();
+
+        if (sequences.length === 0) {
+            setStatus('error', 'No sequences found. Verify your API key and that your account has sequences.');
+            showLoader(false);
+            btn.disabled = false;
+            return;
+        }
+
+        setStatus('info', `Found ${sequences.length} sequences. Fetching "Not Contacted" counts...`);
+
+        // 2. Get not-contacted count for each sequence
+        const sequenceData = [];
+
+        // Check if the sequence objects already have the count embedded
+        const firstSeq = sequences[0];
+        const hasEmbeddedCount = (
+            firstSeq.notContactedCount !== undefined ||
+            firstSeq.not_contacted_count !== undefined ||
+            firstSeq.notContacted !== undefined ||
+            firstSeq.not_contacted !== undefined ||
+            firstSeq.prospects?.notContacted !== undefined ||
+            firstSeq.stats?.notContacted !== undefined ||
+            firstSeq.prospectStats?.notContacted !== undefined
+        );
+
+        if (hasEmbeddedCount) {
+            // Counts are embedded in the sequence list response
+            for (const seq of sequences) {
+                const count = seq.notContactedCount
+                    ?? seq.not_contacted_count
+                    ?? seq.notContacted
+                    ?? seq.not_contacted
+                    ?? seq.prospects?.notContacted
+                    ?? seq.prospects?.not_contacted
+                    ?? seq.stats?.notContacted
+                    ?? seq.stats?.not_contacted
+                    ?? seq.prospectStats?.notContacted
+                    ?? seq.prospectStats?.not_contacted
+                    ?? null;
+
+                sequenceData.push({
+                    id: seq.id ?? seq._id ?? seq.sequenceId,
+                    name: seq.name ?? seq.title ?? seq.sequenceName ?? `Sequence ${seq.id}`,
+                    notContactedCount: count !== null ? Number(count) : null,
+                });
+            }
+        } else {
+            // Need to fetch individually
+            for (let i = 0; i < sequences.length; i++) {
+                const seq = sequences[i];
+                const id = seq.id ?? seq._id ?? seq.sequenceId;
+                const name = seq.name ?? seq.title ?? seq.sequenceName ?? `Sequence ${id}`;
+
+                setStatus('info', `Fetching count for "${name}" (${i + 1}/${sequences.length})...`);
+
+                const count = await client.getNotContactedCount(id);
+                sequenceData.push({ id, name, notContactedCount: count });
+            }
+        }
+
+        // 3. Render
+        renderResults(sequenceData, threshold);
+        setStatus('success', `Done — loaded ${sequenceData.length} sequences.`);
+    } catch (err) {
+        console.error(err);
+
+        // Detect CORS issues
+        if (err instanceof TypeError && err.message.includes('Failed to fetch')) {
+            setStatus('error',
+                'Network error — likely a CORS restriction. ' +
+                'The Saleshandy API may not allow browser-based requests. ' +
+                'Try running this page from the same domain or use a CORS proxy.'
+            );
+        } else {
+            setStatus('error', `Error: ${err.message}`);
+        }
+    } finally {
+        showLoader(false);
+        btn.disabled = false;
+    }
+}
+
+// ── Initialise ───────────────────────────────────────────────────
+document.getElementById('date-badge').textContent = new Date().toLocaleDateString('en-US', {
+    year: 'numeric', month: 'short', day: 'numeric',
+});
+
+// Pre-fill API key if provided in URL hash (e.g. #key=abc123)
+const hashParams = new URLSearchParams(window.location.hash.slice(1));
+if (hashParams.get('key')) {
+    document.getElementById('input-api-key').value = hashParams.get('key');
+}
+</script>
+</body>
+</html>
