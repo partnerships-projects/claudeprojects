@@ -173,32 +173,20 @@ function _initMultiSelect(key) {
         btn.textContent = count === 0 ? `All ${plural}` : `${label} (${count})`;
     }
 
-    function _closeAndApply() {
-        if (!dd.classList.contains('hidden')) {
-            dd.classList.add('hidden');
-            const checked = [...dd.querySelectorAll('input[type="checkbox"]:checked')].map(cb => cb.value);
-            Store.setFilter(key, checked);
-        }
-    }
-
-    // Toggle dropdown
+    // Toggle dropdown — only on the trigger button
     btn.addEventListener('click', (e) => {
         e.stopPropagation();
-        // Close other open multi-selects (and apply their state)
-        document.querySelectorAll('.filter-ms-wrap').forEach(otherWrap => {
-            if (otherWrap === wrap) return;
-            const otherDd = otherWrap.querySelector('.ms-dropdown');
-            if (otherDd && !otherDd.classList.contains('hidden')) {
-                otherDd.classList.add('hidden');
-                const otherKey = otherWrap.dataset.ms;
-                const otherChecked = [...otherDd.querySelectorAll('input[type="checkbox"]:checked')].map(cb => cb.value);
-                Store.setFilter(otherKey, otherChecked);
-            }
-        });
+        // Close & apply other open multi-selects first
+        _msCloseAllExcept(key);
         dd.classList.toggle('hidden');
     });
 
-    // Checkbox changes — just update the label, don't apply
+    // ALL clicks inside the dropdown stay inside — never bubble to document
+    dd.addEventListener('click', (e) => {
+        e.stopPropagation();
+    });
+
+    // Checkbox changes — just update the label, don't apply yet
     dd.querySelectorAll('input[type="checkbox"]').forEach(cb => {
         cb.addEventListener('change', () => {
             _updateBtnLabel();
@@ -219,15 +207,50 @@ function _initMultiSelect(key) {
     dd.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
             e.preventDefault();
-            _closeAndApply();
+            _msCloseAndApply(key);
         }
     });
+}
 
-    // Click outside → close and apply
-    document.addEventListener('click', (e) => {
-        if (!wrap.contains(e.target)) {
-            _closeAndApply();
+/* Close a specific multi-select and apply its checked values */
+function _msCloseAndApply(key) {
+    const wrap = document.querySelector(`.filter-ms-wrap[data-ms="${key}"]`);
+    if (!wrap) return;
+    const dd = wrap.querySelector('.ms-dropdown');
+    if (!dd || dd.classList.contains('hidden')) return;
+    dd.classList.add('hidden');
+    const checked = [...dd.querySelectorAll('input[type="checkbox"]:checked')].map(cb => cb.value);
+    Store.setFilter(key, checked);
+}
+
+/* Close & apply all open multi-selects except the one with the given key */
+function _msCloseAllExcept(exceptKey) {
+    document.querySelectorAll('.filter-ms-wrap').forEach(wrap => {
+        const key = wrap.dataset.ms;
+        if (key === exceptKey) return;
+        const dd = wrap.querySelector('.ms-dropdown');
+        if (dd && !dd.classList.contains('hidden')) {
+            dd.classList.add('hidden');
+            const checked = [...dd.querySelectorAll('input[type="checkbox"]:checked')].map(cb => cb.value);
+            Store.setFilter(key, checked);
         }
+    });
+}
+
+/* Single global handler: close & apply any open dropdown on outside click.
+   Registered ONCE so it never piles up. */
+if (!window.__msOutsideClickBound) {
+    window.__msOutsideClickBound = true;
+    document.addEventListener('click', () => {
+        document.querySelectorAll('.filter-ms-wrap').forEach(wrap => {
+            const dd = wrap.querySelector('.ms-dropdown');
+            if (dd && !dd.classList.contains('hidden')) {
+                dd.classList.add('hidden');
+                const key = wrap.dataset.ms;
+                const checked = [...dd.querySelectorAll('input[type="checkbox"]:checked')].map(cb => cb.value);
+                Store.setFilter(key, checked);
+            }
+        });
     });
 }
 
