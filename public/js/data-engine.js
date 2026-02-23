@@ -125,6 +125,7 @@ const DataEngine = {
             record._goal = (record.goal || '').toString().trim();
             record._servers = (record.servers || '').toString().trim();
             record._cs = (record.cs || '').toString().trim();
+            record._owner = (record.owner || '').toString().trim();
             record._month = (record.month || '').toString().trim();
 
             records.push(record);
@@ -173,12 +174,14 @@ const DataEngine = {
     getFilterOptions(records, clientMap) {
         const types = new Set();
         const audiences = new Set();
+        const owners = new Set();
         let minDate = null;
         let maxDate = null;
 
         records.forEach(r => {
             if (r._type) types.add(r._type);
             if (r._targetAudience) audiences.add(r._targetAudience);
+            if (r._owner) owners.add(r._owner);
             if (r._date) {
                 if (!minDate || r._date < minDate) minDate = r._date;
                 if (!maxDate || r._date > maxDate) maxDate = r._date;
@@ -189,6 +192,7 @@ const DataEngine = {
             clients: Object.keys(clientMap).sort(),
             types: [...types].sort(),
             audiences: [...audiences].sort(),
+            owners: [...owners].sort(),
             minDate,
             maxDate,
         };

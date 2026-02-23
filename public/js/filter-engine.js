@@ -36,6 +36,11 @@ const FilterEngine = {
             result = result.filter(r => r._targetAudience === filters.audience);
         }
 
+        // Owner
+        if (filters.owner !== 'all') {
+            result = result.filter(r => r._owner === filters.owner);
+        }
+
         return result;
     },
 };

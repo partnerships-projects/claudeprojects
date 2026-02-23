@@ -63,14 +63,10 @@ function renderMasterDashboard() {
     if (clientGroups.length > 1) {
         html += `
             <h3 class="section-title">Client Comparison</h3>
-            <div class="grid grid-3-2">
+            <div class="grid grid-1">
                 <div class="card">
                     <div class="card-header"><span class="card-title">Client Performance Table</span></div>
                     ${renderClientComparisonTable(filteredRecords)}
-                </div>
-                <div class="card">
-                    <div class="card-header"><span class="card-title">Rates by Client</span></div>
-                    <div class="chart-container lg"><canvas id="chart-client-comparison"></canvas></div>
                 </div>
             </div>
         `;
@@ -81,16 +77,10 @@ function renderMasterDashboard() {
     if (audienceGroups.length > 0 && audienceGroups[0].name !== 'Unknown') {
         html += `
             <h3 class="section-title">Target Audience Performance</h3>
-            <div class="grid grid-3-2">
+            <div class="grid grid-1">
                 <div class="card">
                     <div class="card-header"><span class="card-title">Performance by Audience</span></div>
                     ${renderDimensionTable(filteredRecords, r => r._targetAudience, 'audience', 'Target Audience')}
-                </div>
-                <div class="card">
-                    <div class="card-header"><span class="card-title">Reply Sentiment by Audience</span></div>
-                    <div class="chart-container md">
-                        <canvas id="chart-audience-replies"></canvas>
-                    </div>
                 </div>
             </div>
         `;
@@ -183,10 +173,6 @@ function renderMasterDashboard() {
         setupSortableTables();
         renderSentimentChart(metrics);
         renderTrendsCharts(filteredRecords);
-        if (clientGroups.length > 1) renderClientComparisonChart(filteredRecords);
-        if (audienceGroups.length > 0 && audienceGroups[0].name !== 'Unknown') {
-            renderReplyBreakdownChart('chart-audience-replies', filteredRecords, r => r._targetAudience);
-        }
         if (typeGroups.length > 0 && typeGroups[0].name !== 'Unknown') {
             renderDimensionDonut('chart-type-donut', filteredRecords, r => r._type, 'totalSent');
         }

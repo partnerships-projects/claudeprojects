@@ -59,6 +59,18 @@ function renderFilterBar() {
         `;
     }
 
+    if (filterOptions.owners.length > 0) {
+        html += `
+            <div class="filter-group">
+                <span class="filter-label">Owner</span>
+                <select class="filter-select" id="filter-owner">
+                    <option value="all">All Owners</option>
+                    ${filterOptions.owners.map(o => `<option value="${escapeHtml(o)}" ${filters.owner === o ? 'selected' : ''}>${escapeHtml(o)}</option>`).join('')}
+                </select>
+            </div>
+        `;
+    }
+
     html += `
         <button class="filter-reset" id="filter-reset-btn">Reset</button>
         <span class="filter-count">${fmtNum(filteredRecords.length)} of ${fmtNum(totalForView)} records</span>
@@ -75,6 +87,7 @@ function renderFilterBar() {
     bind('filter-client', 'client');
     bind('filter-type', 'type');
     bind('filter-audience', 'audience');
+    bind('filter-owner', 'owner');
 
     const resetBtn = document.getElementById('filter-reset-btn');
     if (resetBtn) resetBtn.addEventListener('click', () => Store.resetFilters());
