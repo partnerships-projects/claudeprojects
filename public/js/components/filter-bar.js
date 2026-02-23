@@ -103,8 +103,7 @@ function renderFilterBar() {
         altFormat: 'M j, Y',
         allowInput: false,
         disableMobile: true,
-        ...(opts.minDate ? { minDate: opts.minDate } : {}),
-        ...(opts.maxDate ? { maxDate: opts.maxDate } : {}),
+        animate: false,
     };
 
     const fromEl = document.getElementById('filter-date-from');
@@ -166,45 +165,70 @@ function _initMultiSelect(key) {
 
     const btn = wrap.querySelector('.ms-trigger');
     const dd = wrap.querySelector('.ms-dropdown');
+    const label = btn.closest('.filter-ms-wrap').querySelector('.filter-label').textContent;
+
+    function _updateBtnLabel() {
+        const count = dd.querySelectorAll('input[type="checkbox"]:checked').length;
+        const plural = label === 'Copy' ? 'Copies' : `${label}s`;
+        btn.textContent = count === 0 ? `All ${plural}` : `${label} (${count})`;
+    }
+
+    function _closeAndApply() {
+        if (!dd.classList.contains('hidden')) {
+            dd.classList.add('hidden');
+            const checked = [...dd.querySelectorAll('input[type="checkbox"]:checked')].map(cb => cb.value);
+            Store.setFilter(key, checked);
+        }
+    }
 
     // Toggle dropdown
     btn.addEventListener('click', (e) => {
         e.stopPropagation();
-        // Close other open dropdowns
-        document.querySelectorAll('.ms-dropdown').forEach(d => {
-            if (d !== dd) d.classList.add('hidden');
+        // Close other open multi-selects (and apply their state)
+        document.querySelectorAll('.filter-ms-wrap').forEach(otherWrap => {
+            if (otherWrap === wrap) return;
+            const otherDd = otherWrap.querySelector('.ms-dropdown');
+            if (otherDd && !otherDd.classList.contains('hidden')) {
+                otherDd.classList.add('hidden');
+                const otherKey = otherWrap.dataset.ms;
+                const otherChecked = [...otherDd.querySelectorAll('input[type="checkbox"]:checked')].map(cb => cb.value);
+                Store.setFilter(otherKey, otherChecked);
+            }
         });
         dd.classList.toggle('hidden');
     });
 
-    // Checkbox changes
+    // Checkbox changes — just update the label, don't apply
     dd.querySelectorAll('input[type="checkbox"]').forEach(cb => {
         cb.addEventListener('change', () => {
-            _applyMultiSelect(key, wrap);
+            _updateBtnLabel();
         });
     });
 
-    // Deselect all
+    // Deselect all — update label, stay open
     const deselectBtn = dd.querySelector('.ms-deselect');
     if (deselectBtn) {
         deselectBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             dd.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
-            _applyMultiSelect(key, wrap);
+            _updateBtnLabel();
         });
     }
 
-    // Close on outside click
-    document.addEventListener('click', (e) => {
-        if (!wrap.contains(e.target)) {
-            dd.classList.add('hidden');
+    // Enter key → close and apply
+    dd.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            _closeAndApply();
         }
     });
-}
 
-function _applyMultiSelect(key, wrap) {
-    const checked = [...wrap.querySelectorAll('input[type="checkbox"]:checked')].map(cb => cb.value);
-    Store.setFilter(key, checked);
+    // Click outside → close and apply
+    document.addEventListener('click', (e) => {
+        if (!wrap.contains(e.target)) {
+            _closeAndApply();
+        }
+    });
 }
 
 // ==================== Scoped options ====================

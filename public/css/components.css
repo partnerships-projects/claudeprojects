@@ -491,24 +491,46 @@
     color: #fff;
 }
 
-.flatpickr-current-month .numInputWrapper .cur-year {
+.flatpickr-current-month input.cur-year {
     color: #fff !important;
+    font-weight: 600;
+    background: transparent;
 }
 
-.flatpickr-current-month input.cur-year {
-    color: var(--text-primary);
-    font-weight: 600;
+/* Year up/down arrows */
+.flatpickr-current-month .numInputWrapper {
+    background: transparent;
+}
+
+.flatpickr-current-month .numInputWrapper span {
+    border: none;
+}
+
+.flatpickr-current-month .numInputWrapper span::after {
+    border-bottom-color: #fff !important;
+    border-top-color: #fff !important;
+}
+
+.flatpickr-current-month .numInputWrapper span:hover::after {
+    border-bottom-color: var(--accent-blue) !important;
+    border-top-color: var(--accent-blue) !important;
 }
 
 .flatpickr-months .flatpickr-prev-month,
 .flatpickr-months .flatpickr-next-month {
     color: var(--text-secondary);
     fill: var(--text-secondary);
+    padding: 8px 10px;
 }
 
 .flatpickr-months .flatpickr-prev-month:hover,
 .flatpickr-months .flatpickr-next-month:hover {
     color: var(--accent-blue);
+}
+
+.flatpickr-months .flatpickr-prev-month svg,
+.flatpickr-months .flatpickr-next-month svg {
+    fill: var(--text-secondary);
 }
 
 .flatpickr-months .flatpickr-prev-month:hover svg,
