@@ -87,7 +87,7 @@ function renderClientComparisonTable(records) {
     `;
 }
 
-// Generic dimension performance table
+// Generic dimension performance table (sortable + scrollable)
 function renderDimensionTable(records, accessor, label, labelCol = 'Segment') {
     const groups = MetricsCalc.computeByDimension(records, accessor, label);
     if (groups.length === 0) return '<p style="color:var(--text-muted);font-size:13px;">No data available</p>';
@@ -99,32 +99,34 @@ function renderDimensionTable(records, accessor, label, labelCol = 'Segment') {
         const isBest = m.conversionRate === bestConv && bestConv > 0;
         return `
             <tr class="${isBest ? 'highlight-row' : ''}">
-                <td class="name-col">${escapeHtml(g.name)}</td>
-                <td class="num">${fmtNum(m.totalSent)}</td>
-                <td class="num">${fmtPct(m.openRate)}</td>
-                <td class="num">${fmtPct(m.replyRate)}</td>
-                <td class="num" style="color:var(--positive)">${fmtPct(m.positiveRate)}</td>
-                <td class="num">${fmtPct(m.conversionRate)}</td>
-                <td class="num" style="font-weight:700">${fmtNum(m.totalConverted)}</td>
+                <td class="name-col" data-sort-value="${escapeHtml(g.name)}">${escapeHtml(g.name)}</td>
+                <td class="num" data-sort-value="${m.totalSent}">${fmtNum(m.totalSent)}</td>
+                <td class="num" data-sort-value="${m.openRate}">${fmtPct(m.openRate)}</td>
+                <td class="num" data-sort-value="${m.replyRate}">${fmtPct(m.replyRate)}</td>
+                <td class="num" data-sort-value="${m.positiveRate}" style="color:var(--positive)">${fmtPct(m.positiveRate)}</td>
+                <td class="num" data-sort-value="${m.conversionRate}">${fmtPct(m.conversionRate)}</td>
+                <td class="num" data-sort-value="${m.totalConverted}" style="font-weight:700">${fmtNum(m.totalConverted)}</td>
             </tr>
         `;
     }).join('');
 
     return `
-        <table class="data-table">
-            <thead>
-                <tr>
-                    <th>${labelCol}</th>
-                    <th>Sent</th>
-                    <th>Open Rate</th>
-                    <th>Reply Rate</th>
-                    <th>Positive %</th>
-                    <th>Conv. Rate</th>
-                    <th>Conversions</th>
-                </tr>
-            </thead>
-            <tbody>${rows}</tbody>
-        </table>
+        <div class="table-scroll-container">
+            <table class="data-table sortable-table">
+                <thead>
+                    <tr>
+                        <th class="sortable-th" data-sort-key="0">${labelCol} <span class="sort-arrow"></span></th>
+                        <th class="sortable-th" data-sort-key="1">Sent <span class="sort-arrow"></span></th>
+                        <th class="sortable-th" data-sort-key="2">Open Rate <span class="sort-arrow"></span></th>
+                        <th class="sortable-th" data-sort-key="3">Reply Rate <span class="sort-arrow"></span></th>
+                        <th class="sortable-th" data-sort-key="4">Positive % <span class="sort-arrow"></span></th>
+                        <th class="sortable-th" data-sort-key="5">Conv. Rate <span class="sort-arrow"></span></th>
+                        <th class="sortable-th" data-sort-key="6">Conversions <span class="sort-arrow"></span></th>
+                    </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>
+        </div>
     `;
 }
 
@@ -204,4 +206,104 @@ function renderHourlyChart(records) {
 // Team Leader table (convenience wrapper)
 function renderTeamLeaderTable(records) {
     return renderDimensionTable(records, r => r._teamLeader, 'teamLeader', 'Team Leader');
+}
+
+// Initialize sorting on all sortable tables in the DOM
+function setupSortableTables() {
+    document.querySelectorAll('.sortable-table').forEach(table => {
+        const headers = table.querySelectorAll('th.sortable-th');
+        headers.forEach(th => {
+            th.addEventListener('click', () => {
+                const colIndex = parseInt(th.dataset.sortKey);
+                const tbody = table.querySelector('tbody');
+                const rows = Array.from(tbody.querySelectorAll('tr'));
+
+                // Toggle direction
+                const currentDir = th.dataset.sortDir || 'none';
+                const newDir = currentDir === 'asc' ? 'desc' : 'asc';
+
+                // Reset all headers in this table
+                headers.forEach(h => {
+                    h.dataset.sortDir = 'none';
+                    h.classList.remove('sort-asc', 'sort-desc');
+                });
+
+                th.dataset.sortDir = newDir;
+                th.classList.add(newDir === 'asc' ? 'sort-asc' : 'sort-desc');
+
+                // Sort rows by data-sort-value
+                rows.sort((a, b) => {
+                    const aVal = a.cells[colIndex].dataset.sortValue;
+                    const bVal = b.cells[colIndex].dataset.sortValue;
+
+                    const aNum = parseFloat(aVal);
+                    const bNum = parseFloat(bVal);
+                    const isNumeric = !isNaN(aNum) && !isNaN(bNum);
+
+                    let cmp;
+                    if (isNumeric) {
+                        cmp = aNum - bNum;
+                    } else {
+                        cmp = (aVal || '').localeCompare(bVal || '');
+                    }
+
+                    return newDir === 'asc' ? cmp : -cmp;
+                });
+
+                rows.forEach(row => tbody.appendChild(row));
+            });
+        });
+    });
+}
+
+// Horizontal stacked bar chart: reply sentiment breakdown by dimension
+function renderReplyBreakdownChart(chartId, records, accessor) {
+    const groups = MetricsCalc.computeByDimension(records, accessor);
+    if (groups.length === 0) return;
+
+    Charts.create(chartId, {
+        type: 'bar',
+        data: {
+            labels: groups.map(g => g.name),
+            datasets: [
+                {
+                    label: 'Positive',
+                    data: groups.map(g => g.metrics.totalPositive),
+                    backgroundColor: colorWithAlpha('#34d399', 0.75),
+                },
+                {
+                    label: 'Negative',
+                    data: groups.map(g => g.metrics.totalNegative),
+                    backgroundColor: colorWithAlpha('#f87171', 0.75),
+                },
+                {
+                    label: 'Complex',
+                    data: groups.map(g => g.metrics.totalComplex),
+                    backgroundColor: colorWithAlpha('#fbbf24', 0.75),
+                },
+            ],
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            indexAxis: 'y',
+            scales: {
+                x: { stacked: true, beginAtZero: true, grid: { color: 'rgba(35,40,66,0.4)' } },
+                y: { stacked: true, grid: { display: false } },
+            },
+            plugins: {
+                legend: { position: 'top' },
+                tooltip: {
+                    callbacks: {
+                        afterBody: function(items) {
+                            const idx = items[0].dataIndex;
+                            const g = groups[idx];
+                            const total = g.metrics.totalPositive + g.metrics.totalNegative + g.metrics.totalComplex;
+                            return total > 0 ? `Total replies: ${fmtNum(total)}` : '';
+                        },
+                    },
+                },
+            },
+        },
+    });
 }

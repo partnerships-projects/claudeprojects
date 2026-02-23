@@ -87,9 +87,9 @@ function renderMasterDashboard() {
                     ${renderDimensionTable(filteredRecords, r => r._targetAudience, 'audience', 'Target Audience')}
                 </div>
                 <div class="card">
-                    <div class="card-header"><span class="card-title">Reply Distribution by Audience</span></div>
-                    <div class="chart-container md" style="display:flex;align-items:center;justify-content:center;">
-                        <canvas id="chart-audience-donut"></canvas>
+                    <div class="card-header"><span class="card-title">Reply Sentiment by Audience</span></div>
+                    <div class="chart-container md">
+                        <canvas id="chart-audience-replies"></canvas>
                     </div>
                 </div>
             </div>
@@ -178,13 +178,14 @@ function renderMasterDashboard() {
     html += `</div>`;
     content.innerHTML = html;
 
-    // Render charts after DOM update
+    // Render charts + set up interactive tables after DOM update
     requestAnimationFrame(() => {
+        setupSortableTables();
         renderSentimentChart(metrics);
         renderTrendsCharts(filteredRecords);
         if (clientGroups.length > 1) renderClientComparisonChart(filteredRecords);
         if (audienceGroups.length > 0 && audienceGroups[0].name !== 'Unknown') {
-            renderDimensionDonut('chart-audience-donut', filteredRecords, r => r._targetAudience);
+            renderReplyBreakdownChart('chart-audience-replies', filteredRecords, r => r._targetAudience);
         }
         if (typeGroups.length > 0 && typeGroups[0].name !== 'Unknown') {
             renderDimensionDonut('chart-type-donut', filteredRecords, r => r._type, 'totalSent');

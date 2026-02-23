@@ -187,6 +187,30 @@
     color: var(--accent-red);
 }
 
+/* ==================== SCROLLABLE TABLE CONTAINER ==================== */
+.table-scroll-container {
+    max-height: 400px;
+    overflow-y: auto;
+    border-radius: var(--radius-sm);
+}
+
+.table-scroll-container::-webkit-scrollbar {
+    width: 6px;
+}
+
+.table-scroll-container::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.table-scroll-container::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 3px;
+}
+
+.table-scroll-container::-webkit-scrollbar-thumb:hover {
+    background: var(--text-dim);
+}
+
 /* ==================== TABLES ==================== */
 .data-table {
     width: 100%;
@@ -204,6 +228,44 @@
     border-bottom: 1px solid var(--border);
     font-weight: 600;
     white-space: nowrap;
+}
+
+/* Sticky headers inside scroll container */
+.table-scroll-container .data-table thead th {
+    position: sticky;
+    top: 0;
+    background: var(--bg-card);
+    z-index: 1;
+}
+
+/* ==================== SORTABLE HEADERS ==================== */
+.sortable-th {
+    cursor: pointer;
+    user-select: none;
+    transition: color var(--transition-fast);
+}
+
+.sortable-th:hover {
+    color: var(--text-primary);
+}
+
+.sort-arrow::after {
+    content: '\2195';
+    margin-left: 4px;
+    opacity: 0.3;
+    font-size: 9px;
+}
+
+.sortable-th.sort-asc .sort-arrow::after {
+    content: '\2191';
+    opacity: 1;
+    color: var(--accent-blue);
+}
+
+.sortable-th.sort-desc .sort-arrow::after {
+    content: '\2193';
+    opacity: 1;
+    color: var(--accent-blue);
 }
 
 .data-table td {

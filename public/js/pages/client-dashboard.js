@@ -170,8 +170,9 @@ function renderClientDashboard() {
     html += `</div>`;
     content.innerHTML = html;
 
-    // Render charts
+    // Render charts + set up interactive tables
     requestAnimationFrame(() => {
+        setupSortableTables();
         renderSentimentChart(metrics);
         renderTrendsCharts(filteredRecords);
         if (audienceGroups.length > 0 && audienceGroups[0].name !== 'Unknown') {
