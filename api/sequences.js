@@ -171,10 +171,20 @@ module.exports = async function handler(req, res) {
         // Debug mode: return raw API response to diagnose structure
         if (req.query.debug === '1') {
             const raw = await apiGet('/v1/sequences?page=1');
+            const items = raw.payload || raw.data || raw.sequences || [];
+            const firstId = items[0]?.id;
+            let detailSample = null;
+            if (firstId) {
+                try {
+                    const detail = await apiGet(`/v1/sequences/${firstId}`);
+                    detailSample = JSON.stringify(detail).slice(0, 3000);
+                } catch (e) { detailSample = 'Error: ' + e.message; }
+            }
             return res.status(200).json({
                 _debug: true,
                 topLevelKeys: Object.keys(raw),
-                rawSample: JSON.stringify(raw).slice(0, 3000),
+                listSample: JSON.stringify(items[0]).slice(0, 1000),
+                detailSample,
             });
         }
 
