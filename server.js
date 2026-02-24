@@ -429,7 +429,7 @@ async function fetchAllSequences() {
     let page = 1;
 
     while (true) {
-        const data = await saleshandyGet(`/api/v1/sequences?page=${page}&limit=100`);
+        const data = await saleshandyGet(`/v1/sequences?page=${page}&limit=100`);
         const items = data.data || data.sequences || data.items || data.results || [];
 
         if (!Array.isArray(items) || items.length === 0) {
@@ -474,7 +474,7 @@ async function fetchAllSequences() {
         // If not embedded, fetch from detail endpoint
         if (count === null || count === undefined) {
             try {
-                const detail = await saleshandyGet(`/api/v1/sequences/${id}`);
+                const detail = await saleshandyGet(`/v1/sequences/${id}`);
                 const s = detail.data || detail;
                 count = s.notContactedCount ?? s.not_contacted_count
                     ?? s.notContacted ?? s.not_contacted
@@ -489,7 +489,7 @@ async function fetchAllSequences() {
         if (count === null || count === undefined) {
             for (const status of ['NOT_CONTACTED', 'notContacted', 'not_contacted']) {
                 try {
-                    const data = await saleshandyGet(`/api/v1/sequences/${id}/prospects?status=${status}&limit=1`);
+                    const data = await saleshandyGet(`/v1/sequences/${id}/prospects?status=${status}&limit=1`);
                     const total = data.total ?? data.totalCount ?? data.total_count
                         ?? data.meta?.total ?? data.pagination?.total;
                     if (total !== null && total !== undefined) { count = Number(total); break; }
@@ -592,8 +592,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/test') {
         const results = {};
         const testEndpoints = [
-            '/api/v1/sequences?page=1&limit=1',
-            '/api/v2/sequences?page=1&limit=1',
+            '/v1/sequences?page=1&limit=1',
         ];
         for (const ep of testEndpoints) {
             try {

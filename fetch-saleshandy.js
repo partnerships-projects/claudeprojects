@@ -52,7 +52,7 @@ async function getAllSequences() {
     const limit = 100;
 
     while (true) {
-        const data = await apiRequest('/api/v1/sequences', { page, limit });
+        const data = await apiRequest('/v1/sequences', { page, limit });
         const items = data.data || data.sequences || data.items || data.results || [];
 
         if (!Array.isArray(items) || items.length === 0) {
@@ -88,8 +88,8 @@ function extractCount(seq) {
 async function getNotContactedCount(sequenceId) {
     // Strategy 1: sequence detail endpoint
     const detailPaths = [
-        `/api/v1/sequences/${sequenceId}`,
-        `/api/v1/sequence/${sequenceId}`,
+        `/v1/sequences/${sequenceId}`,
+        `/v1/sequence/${sequenceId}`,
     ];
 
     for (const p of detailPaths) {
@@ -103,8 +103,8 @@ async function getNotContactedCount(sequenceId) {
 
     // Strategy 2: prospect list with status filter
     const prospectPaths = [
-        `/api/v1/sequences/${sequenceId}/prospects`,
-        `/api/v1/prospects`,
+        `/v1/sequences/${sequenceId}/prospects`,
+        `/v1/prospects`,
     ];
     const statusValues = ['NOT_CONTACTED', 'notContacted', 'not_contacted', 'Not Contacted', '0'];
 
@@ -112,7 +112,7 @@ async function getNotContactedCount(sequenceId) {
         for (const status of statusValues) {
             try {
                 const params = { status, limit: 1 };
-                if (p === '/api/v1/prospects') params.sequenceId = sequenceId;
+                if (p === '/v1/prospects') params.sequenceId = sequenceId;
                 const data = await apiRequest(p, params);
                 const total = data.total ?? data.totalCount ?? data.total_count
                     ?? data.meta?.total ?? data.pagination?.total;

@@ -80,7 +80,7 @@ async function fetchAllSequences() {
     let page = 1;
 
     while (true) {
-        const data = await apiGet(`/api/v1/sequences?page=${page}&limit=100`);
+        const data = await apiGet(`/v1/sequences?page=${page}&limit=100`);
         const items = data.data || data.sequences || data.items || data.results || [];
 
         if (!Array.isArray(items) || items.length === 0) {
@@ -125,7 +125,7 @@ async function fetchAllSequences() {
         // If not embedded, fetch from detail endpoint
         if (count === null || count === undefined) {
             try {
-                const detail = await apiGet(`/api/v1/sequences/${id}`);
+                const detail = await apiGet(`/v1/sequences/${id}`);
                 const s = detail.data || detail;
                 count = s.notContactedCount ?? s.not_contacted_count
                     ?? s.notContacted ?? s.not_contacted
@@ -140,7 +140,7 @@ async function fetchAllSequences() {
         if (count === null || count === undefined) {
             for (const status of ['NOT_CONTACTED', 'notContacted', 'not_contacted']) {
                 try {
-                    const data = await apiGet(`/api/v1/sequences/${id}/prospects?status=${status}&limit=1`);
+                    const data = await apiGet(`/v1/sequences/${id}/prospects?status=${status}&limit=1`);
                     const total = data.total ?? data.totalCount ?? data.total_count
                         ?? data.meta?.total ?? data.pagination?.total;
                     if (total !== null && total !== undefined) { count = Number(total); break; }
