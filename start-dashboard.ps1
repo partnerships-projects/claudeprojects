@@ -43,7 +43,7 @@ function Get-SequenceData {
     $page = 1
 
     while ($true) {
-        $data = Invoke-SaleshandyAPI "/v1/sequences?page=$page&limit=100"
+        $data = Invoke-SaleshandyAPI "/v1/sequences?page=$page"
         if ($null -eq $data) { break }
 
         $items = $null
@@ -126,7 +126,7 @@ function Get-SequenceData {
         # Try prospect list as last resort
         if ($null -eq $count) {
             foreach ($status in @("NOT_CONTACTED","notContacted","not_contacted")) {
-                $pData = Invoke-SaleshandyAPI "/v1/sequences/$id/prospects?status=$status&limit=1"
+                $pData = Invoke-SaleshandyAPI "/v1/sequences/$id/prospects?status=$status"
                 if ($null -ne $pData) {
                     $total = if ($null -ne $pData.total) { $pData.total }
                              elseif ($null -ne $pData.totalCount) { $pData.totalCount }

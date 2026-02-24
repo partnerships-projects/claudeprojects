@@ -52,7 +52,7 @@ async function getAllSequences() {
     const limit = 100;
 
     while (true) {
-        const data = await apiRequest('/v1/sequences', { page, limit });
+        const data = await apiRequest('/v1/sequences', { page });
         const items = data.data || data.sequences || data.items || data.results || [];
 
         if (!Array.isArray(items) || items.length === 0) {
