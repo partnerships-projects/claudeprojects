@@ -32,7 +32,7 @@ function proxySaleshandy(targetPath, res) {
         path: url.pathname + url.search,
         method: 'GET',
         headers: {
-            'Authorization': `Bearer ${API_KEY}`,
+            'x-api-key': API_KEY,
             'Content-Type': 'application/json',
         },
     };
@@ -381,7 +381,7 @@ function saleshandyGetOnce(urlPath) {
             path: url.pathname + url.search,
             method: 'GET',
             headers: {
-                'Authorization': `Bearer ${API_KEY}`,
+                'x-api-key': API_KEY,
                 'Content-Type': 'application/json',
             },
         };
