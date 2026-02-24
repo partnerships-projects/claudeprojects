@@ -1,0 +1,13 @@
+{
+  "name": "saleshandy-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SalesHandy uncontacted prospects dashboard — hosted on Vercel",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "dev": "node server.js",
+    "fetch": "node fetch-saleshandy.js"
+  }
+}

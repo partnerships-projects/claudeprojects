@@ -10,7 +10,7 @@
 # No installation required — uses only built-in Windows components.
 # ─────────────────────────────────────────────────────────────────────────────
 
-$API_KEY    = "92e03cc1d2439619b063d542511422ac"
+$API_KEY    = if ($env:SALESHANDY_API_KEY) { $env:SALESHANDY_API_KEY } else { Read-Host "Enter your SalesHandy API key" }
 $BASE_URL   = "https://leo-open-api-gateway.saleshandy.com"
 $PORT       = 8080
 $THRESHOLD  = 2000

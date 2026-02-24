@@ -15,7 +15,7 @@
 // No dependencies required — uses built-in Node.js fetch (Node 18+).
 // ─────────────────────────────────────────────────────────────────────────────
 
-const API_KEY = '92e03cc1d2439619b063d542511422ac';
+const API_KEY = process.env.SALESHANDY_API_KEY || '';
 const BASE_URL = 'https://leo-open-api-gateway.saleshandy.com';
 const THRESHOLD = 2000;
 
