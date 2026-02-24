@@ -168,34 +168,34 @@ module.exports = async function handler(req, res) {
     }
 
     try {
-        // Debug mode: probe multiple endpoints to find prospect count data
+        // Debug mode: probe a single endpoint to avoid rate limits
+        // Usage: ?debug=1&probe=/v1/sequences/KAPqxp1LwB/statistics
+        // Or:    ?debug=1  (just lists sequences)
         if (req.query.debug === '1') {
-            const raw = await apiGet('/v1/sequences?page=1');
-            const items = raw.payload || raw.data || raw.sequences || [];
-            const firstId = items[0]?.id;
-            const probes = {};
-            if (firstId) {
-                const endpoints = [
-                    `/v1/sequences/${firstId}`,
-                    `/v1/sequences/${firstId}/statistics`,
-                    `/v1/sequences/${firstId}/stats`,
-                    `/v1/sequences/${firstId}/prospects`,
-                    `/v1/sequences/${firstId}/prospects?status=NOT_CONTACTED`,
-                    `/v1/sequences/${firstId}/prospects?status=1`,
-                    `/v1/sequence-statistics?sequenceId=${firstId}`,
-                ];
-                for (const ep of endpoints) {
-                    try {
-                        const data = await apiGet(ep, 1);
-                        probes[ep] = JSON.stringify(data).slice(0, 1500);
-                    } catch (e) { probes[ep] = 'Error: ' + e.message; }
+            const probe = req.query.probe;
+            if (probe) {
+                try {
+                    const data = await apiGet(probe, 1);
+                    return res.status(200).json({
+                        _debug: true,
+                        endpoint: probe,
+                        keys: Object.keys(data),
+                        response: JSON.stringify(data).slice(0, 3000),
+                    });
+                } catch (e) {
+                    return res.status(200).json({
+                        _debug: true,
+                        endpoint: probe,
+                        error: e.message,
+                    });
                 }
             }
+            // Default: just list sequences (1 API call)
+            const raw = await apiGet('/v1/sequences?page=1');
             return res.status(200).json({
                 _debug: true,
-                firstSequence: JSON.stringify(items[0]).slice(0, 500),
-                firstId,
-                probes,
+                keys: Object.keys(raw),
+                sample: JSON.stringify(raw).slice(0, 3000),
             });
         }
 
