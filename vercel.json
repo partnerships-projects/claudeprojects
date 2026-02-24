@@ -1,0 +1,9 @@
+{
+  "buildCommand": "",
+  "outputDirectory": "public",
+  "functions": {
+    "api/sequences.js": {
+      "maxDuration": 60
+    }
+  }
+}

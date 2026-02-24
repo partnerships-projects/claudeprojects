@@ -1,0 +1,17 @@
+# Environment variables (contains API keys)
+.env
+.env.local
+.env.production
+
+# Vercel
+.vercel
+
+# Node
+node_modules/
+
+# Generated reports
+saleshandy-sequences.html
+
+# OS files
+.DS_Store
+Thumbs.db
