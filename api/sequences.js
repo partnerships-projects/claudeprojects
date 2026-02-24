@@ -105,10 +105,8 @@ async function fetchAllSequences() {
         return !inactive.includes(status);
     });
 
-    // Extract not-contacted counts
-    const results = [];
-
-    for (const seq of active) {
+    // Extract not-contacted counts — fetch details in parallel to avoid timeout
+    async function getSequenceCount(seq) {
         const id = seq.id ?? seq._id ?? seq.sequenceId;
         const name = seq.name ?? seq.title ?? seq.sequenceName ?? `Sequence ${id}`;
 
@@ -128,8 +126,8 @@ async function fetchAllSequences() {
         // If not embedded, fetch from detail endpoint
         if (count === null || count === undefined) {
             try {
-                const detail = await apiGet(`/v1/sequences/${id}`);
-                const s = detail.data || detail;
+                const detail = await apiGet(`/v1/sequences/${id}`, 1);
+                const s = detail.payload || detail.data || detail;
                 count = s.notContactedCount ?? s.not_contacted_count
                     ?? s.notContacted ?? s.not_contacted
                     ?? s.prospects?.notContacted ?? s.prospects?.not_contacted
@@ -139,19 +137,16 @@ async function fetchAllSequences() {
             } catch (_) {}
         }
 
-        // Try prospect list endpoint as last resort
-        if (count === null || count === undefined) {
-            for (const status of ['NOT_CONTACTED', 'notContacted', 'not_contacted']) {
-                try {
-                    const data = await apiGet(`/v1/sequences/${id}/prospects?status=${status}`);
-                    const total = data.total ?? data.totalCount ?? data.total_count
-                        ?? data.meta?.total ?? data.pagination?.total;
-                    if (total !== null && total !== undefined) { count = Number(total); break; }
-                } catch (_) {}
-            }
-        }
+        return { id, name, notContactedCount: count !== null ? Number(count) : null };
+    }
 
-        results.push({ id, name, notContactedCount: count !== null ? Number(count) : null });
+    // Run all detail fetches in parallel (max 5 at a time to avoid rate limits)
+    const results = [];
+    const BATCH_SIZE = 5;
+    for (let i = 0; i < active.length; i += BATCH_SIZE) {
+        const batch = active.slice(i, i + BATCH_SIZE);
+        const batchResults = await Promise.all(batch.map(getSequenceCount));
+        results.push(...batchResults);
     }
 
     return results;
