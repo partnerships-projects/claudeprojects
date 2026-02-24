@@ -447,10 +447,11 @@ async function fetchAllSequences() {
         page++;
     }
 
-    // Filter active only
+    // Filter out clearly inactive sequences
+    const inactive = ['paused', 'stopped', 'archived', 'deleted', 'draft', 'disabled'];
     const active = allSequences.filter(seq => {
         const status = (seq.status || seq.state || '').toString().toLowerCase();
-        return !status || status === 'active' || status === 'running' || status === 'live' || status === '1';
+        return !inactive.includes(status);
     });
 
     // Extract not-contacted counts

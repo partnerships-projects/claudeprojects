@@ -98,10 +98,11 @@ async function fetchAllSequences() {
         page++;
     }
 
-    // Filter active only
+    // Filter out clearly inactive sequences
+    const inactive = ['paused', 'stopped', 'archived', 'deleted', 'draft', 'disabled'];
     const active = allSequences.filter(seq => {
         const status = (seq.status || seq.state || '').toString().toLowerCase();
-        return !status || status === 'active' || status === 'running' || status === 'live' || status === '1';
+        return !inactive.includes(status);
     });
 
     // Extract not-contacted counts
@@ -172,6 +173,16 @@ module.exports = async function handler(req, res) {
     }
 
     try {
+        // Debug mode: return raw API response to diagnose structure
+        if (req.query.debug === '1') {
+            const raw = await apiGet('/v1/sequences?page=1');
+            return res.status(200).json({
+                _debug: true,
+                topLevelKeys: Object.keys(raw),
+                rawSample: JSON.stringify(raw).slice(0, 3000),
+            });
+        }
+
         const fresh = req.query.fresh === '1';
 
         // Use cache if available and not expired
