@@ -168,23 +168,34 @@ module.exports = async function handler(req, res) {
     }
 
     try {
-        // Debug mode: return raw API response to diagnose structure
+        // Debug mode: probe multiple endpoints to find prospect count data
         if (req.query.debug === '1') {
             const raw = await apiGet('/v1/sequences?page=1');
             const items = raw.payload || raw.data || raw.sequences || [];
             const firstId = items[0]?.id;
-            let detailSample = null;
+            const probes = {};
             if (firstId) {
-                try {
-                    const detail = await apiGet(`/v1/sequences/${firstId}`);
-                    detailSample = JSON.stringify(detail).slice(0, 3000);
-                } catch (e) { detailSample = 'Error: ' + e.message; }
+                const endpoints = [
+                    `/v1/sequences/${firstId}`,
+                    `/v1/sequences/${firstId}/statistics`,
+                    `/v1/sequences/${firstId}/stats`,
+                    `/v1/sequences/${firstId}/prospects`,
+                    `/v1/sequences/${firstId}/prospects?status=NOT_CONTACTED`,
+                    `/v1/sequences/${firstId}/prospects?status=1`,
+                    `/v1/sequence-statistics?sequenceId=${firstId}`,
+                ];
+                for (const ep of endpoints) {
+                    try {
+                        const data = await apiGet(ep, 1);
+                        probes[ep] = JSON.stringify(data).slice(0, 1500);
+                    } catch (e) { probes[ep] = 'Error: ' + e.message; }
+                }
             }
             return res.status(200).json({
                 _debug: true,
-                topLevelKeys: Object.keys(raw),
-                listSample: JSON.stringify(items[0]).slice(0, 1000),
-                detailSample,
+                firstSequence: JSON.stringify(items[0]).slice(0, 500),
+                firstId,
+                probes,
             });
         }
 
