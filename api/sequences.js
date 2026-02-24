@@ -81,7 +81,7 @@ async function fetchAllSequences() {
 
     while (true) {
         const data = await apiGet(`/v1/sequences?page=${page}`);
-        const items = data.data || data.sequences || data.items || data.results || [];
+        const items = data.payload || data.data || data.sequences || data.items || data.results || [];
 
         if (!Array.isArray(items) || items.length === 0) {
             if (page === 1 && Array.isArray(data) && data.length > 0) {
