@@ -79,7 +79,7 @@ async function apiCall(method, urlPath, body, retries = 3) {
                 await new Promise(r => setTimeout(r, delay));
                 continue;
             }
-            const isTransient = err.message.includes('5') && err.message.includes('on /') || err.message.includes('Network') || err.message.includes('Timeout');
+            const isTransient = err.message.includes('Network') || err.message.includes('Timeout');
             if (!isTransient || attempt === retries) break;
             await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000));
         }
@@ -89,21 +89,20 @@ async function apiCall(method, urlPath, body, retries = 3) {
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-// ── Fetch active sequences + stats ──────────────────────────────────────────
+// ── Fetch all sequences + batch stats ───────────────────────────────────────
 
 async function fetchSequencesWithStats() {
     const startTime = Date.now();
-    const TIME_LIMIT = 50000; // 50s to leave room for response
     const elapsed = () => Date.now() - startTime;
 
-    // Step 1: Fetch all sequences (paginated, 100 per page)
+    // Step 1: Fetch ALL sequences across all pages
     const allSequences = [];
     let page = 1;
 
-    while (elapsed() < 20000) { // max 20s for sequence listing
+    while (elapsed() < 25000) { // max 25s for listing
         let data;
         try {
-            data = await apiCall('GET', `/v1/sequences?page=${page}`);
+            data = await apiCall('GET', `/v1/sequences?page=${page}`, null, 2);
         } catch (err) {
             if (err.isRateLimit) break;
             throw err;
@@ -112,77 +111,70 @@ async function fetchSequencesWithStats() {
         const items = Array.isArray(data.payload) ? data.payload : [];
         if (items.length === 0) break;
         allSequences.push(...items);
-        if (items.length < 100) break; // last page
+        if (items.length < 100) break;
         page++;
         await sleep(1500);
     }
 
-    // Step 2: Filter to active sequences only
-    const activeSequences = allSequences.filter(seq => seq.active === true);
+    // Build a map of sequence info by ID
+    const seqMap = {};
+    for (const seq of allSequences) {
+        seqMap[seq.id] = {
+            id: seq.id,
+            name: seq.title || `Sequence ${seq.id}`,
+            client: seq.client?.companyName || null,
+            apiActive: seq.active,
+        };
+    }
 
-    // Step 3: Fetch stats for each active sequence via POST /v1/analytics/stats
+    // Step 2: Fetch stats for each sequence using individual POST /v1/analytics/stats
+    // (consolidated-stats format is unknown, individual stats are proven to work)
     const results = [];
     let statsRateLimited = false;
+    let statsFetched = 0;
 
-    for (const seq of activeSequences) {
-        if (elapsed() > TIME_LIMIT) break;
+    // Get all sequence IDs (fetch stats for ALL, not just active=true)
+    const allIds = allSequences.map(s => s.id);
 
-        let notContacted = null;
-        let total = null;
+    for (const id of allIds) {
+        if (elapsed() > 50000) break; // leave 10s for response
+
         try {
-            const stats = await apiCall('POST', '/v1/analytics/stats', { sequenceId: seq.id }, 2);
+            const stats = await apiCall('POST', '/v1/analytics/stats', { sequenceId: id }, 2);
             const prospects = stats.payload?.prospects?.[0];
-            if (prospects) {
-                notContacted = Number(prospects.notContacted) || 0;
-                total = Number(prospects.total) || 0;
+            const notContacted = prospects ? (Number(prospects.notContacted) || 0) : 0;
+            const total = prospects ? (Number(prospects.total) || 0) : 0;
+            const contacted = prospects ? (Number(prospects.contacted) || 0) : 0;
+            statsFetched++;
+
+            // Only include sequences that have prospects (not contacted > 0)
+            if (notContacted > 0) {
+                results.push({
+                    id,
+                    name: seqMap[id]?.name || stats.payload?.sequenceName || `Sequence ${id}`,
+                    notContactedCount: notContacted,
+                    totalProspects: total,
+                    contacted,
+                    client: seqMap[id]?.client || stats.payload?.client?.companyName || null,
+                });
             }
         } catch (err) {
             if (err.isRateLimit) {
                 statsRateLimited = true;
-                // Still add this sequence without stats, then stop fetching more
-                results.push({
-                    id: seq.id,
-                    name: seq.title || `Sequence ${seq.id}`,
-                    notContactedCount: null,
-                    totalProspects: null,
-                    client: seq.client?.companyName || null,
-                });
                 break;
             }
-            // Non-rate-limit error: add sequence without stats, continue
+            // Skip sequences that error (deleted, etc.)
         }
 
-        results.push({
-            id: seq.id,
-            name: seq.title || `Sequence ${seq.id}`,
-            notContactedCount: notContacted,
-            totalProspects: total,
-            client: seq.client?.companyName || null,
-        });
-
-        await sleep(1500); // respect rate limits
-    }
-
-    // Add remaining active sequences without stats if we ran out of time/got rate limited
-    const fetchedIds = new Set(results.map(r => r.id));
-    for (const seq of activeSequences) {
-        if (!fetchedIds.has(seq.id)) {
-            results.push({
-                id: seq.id,
-                name: seq.title || `Sequence ${seq.id}`,
-                notContactedCount: null,
-                totalProspects: null,
-                client: seq.client?.companyName || null,
-            });
-        }
+        await sleep(1500);
     }
 
     return {
         sequences: results,
         totalSequences: allSequences.length,
-        activeCount: activeSequences.length,
-        statsCompleted: results.filter(r => r.notContactedCount !== null).length,
+        statsFetched,
         statsRateLimited,
+        pagesFetched: page,
         elapsedMs: elapsed(),
     };
 }
@@ -195,62 +187,43 @@ module.exports = async function handler(req, res) {
     if (req.method === 'OPTIONS') { res.status(200).end(); return; }
 
     if (!API_KEY) {
-        res.status(500).json({
-            error: 'SALESHANDY_API_KEY environment variable is not set.',
-        });
-        return;
+        return res.status(500).json({ error: 'SALESHANDY_API_KEY not set.' });
     }
 
     try {
-        // Debug: search for specific sequences across ALL pages
+        // Debug: probe any endpoint
         if (req.query.debug === '1') {
             try {
-                const searchTerms = ['MVM', 'Suno', 'Follwr', 'Persona Space', 'UP/IG'];
-                const allSeqs = [];
-                let page = 1;
-
-                while (page <= 20) {
-                    const data = await apiCall('GET', `/v1/sequences?page=${page}`, null, 2);
-                    const items = Array.isArray(data.payload) ? data.payload : [];
-                    if (items.length === 0) break;
-                    allSeqs.push(...items);
-                    if (items.length < 100) break;
-                    page++;
+                const probe = req.query.probe;
+                if (probe) {
+                    const method = req.query.method === 'POST' ? 'POST' : 'GET';
+                    const body = req.query.body ? JSON.parse(req.query.body) : null;
+                    const data = await httpsRequest(method, probe, body);
+                    return res.status(200).json({ _debug: true, endpoint: probe, raw: data });
+                }
+                // Default debug: try consolidated-stats to discover its format
+                const listData = await apiCall('GET', '/v1/sequences?page=1', null, 2);
+                const sampleIds = (listData.payload || []).slice(0, 3).map(s => s.id);
+                const bodies = [
+                    { sequenceIds: sampleIds },
+                    { ids: sampleIds },
+                    { sequences: sampleIds },
+                    {},
+                ];
+                const probeResults = {};
+                for (const body of bodies) {
+                    const key = JSON.stringify(body);
+                    try {
+                        const data = await httpsRequest('POST', '/v1/analytics/consolidated-stats', body);
+                        probeResults[key] = { status: 'OK', data };
+                    } catch (e) {
+                        probeResults[key] = { status: 'ERROR', message: e.message.slice(0, 300) };
+                    }
                     await sleep(1500);
                 }
-
-                // Find sequences matching search terms
-                const matches = allSeqs.filter(seq =>
-                    searchTerms.some(term => (seq.title || '').includes(term))
-                );
-
-                // Also show field analysis: unique values of `active` and `progress`
-                const activeTrue = allSeqs.filter(s => s.active === true).length;
-                const activeFalse = allSeqs.filter(s => s.active === false).length;
-                const progressValues = {};
-                allSeqs.forEach(s => {
-                    const key = `progress=${s.progress},active=${s.active}`;
-                    progressValues[key] = (progressValues[key] || 0) + 1;
-                });
-
-                return res.status(200).json({
-                    _debug: true,
-                    totalSequences: allSeqs.length,
-                    pagesFetched: page,
-                    fieldAnalysis: { activeTrue, activeFalse, progressCombinations: progressValues },
-                    matchingSequences: matches.map(s => ({
-                        id: s.id, title: s.title, active: s.active, progress: s.progress,
-                        client: s.client, steps: s.steps?.length, subSequences: s.subSequences?.length,
-                        allKeys: Object.keys(s),
-                    })),
-                    // Show last 5 sequences (newest) for comparison
-                    lastFiveSequences: allSeqs.slice(-5).map(s => ({
-                        id: s.id, title: s.title, active: s.active, progress: s.progress,
-                        client: s.client,
-                    })),
-                });
+                return res.status(200).json({ _debug: true, consolidatedStatsProbe: probeResults });
             } catch (e) {
-                return res.status(200).json({ _debug: true, error: e.message, isRateLimit: !!e.isRateLimit });
+                return res.status(200).json({ _debug: true, error: e.message });
             }
         }
 
@@ -279,9 +252,10 @@ module.exports = async function handler(req, res) {
             lastUpdated: new Date(cacheTime).toISOString(),
             _meta: {
                 totalSequences: result.totalSequences,
-                activeCount: result.activeCount,
-                statsCompleted: result.statsCompleted,
+                statsFetched: result.statsFetched,
+                resultsShown: result.sequences.length,
                 statsRateLimited: result.statsRateLimited,
+                pagesFetched: result.pagesFetched,
                 elapsedMs: result.elapsedMs,
             },
         });
