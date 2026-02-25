@@ -211,7 +211,40 @@ module.exports = async function handler(req, res) {
                 }
             }
             const listRaw = await apiGet('/v1/sequences?page=1', 1);
-            return res.status(200).json({ _debug: true, raw: listRaw });
+
+            // Extract items from response
+            let items = null;
+            const wrapper = listRaw.payload ?? listRaw.data ?? listRaw;
+            if (Array.isArray(wrapper)) items = wrapper;
+            else if (typeof wrapper === 'object') {
+                for (const k of Object.keys(wrapper)) {
+                    if (Array.isArray(wrapper[k])) { items = wrapper[k]; break; }
+                }
+            }
+
+            // Show field analysis for first 3 sequences
+            const sample = (items || []).slice(0, 3).map((seq, i) => {
+                const fields = {};
+                for (const [k, v] of Object.entries(seq)) {
+                    if (v && typeof v === 'object' && !Array.isArray(v)) {
+                        fields[k] = { _type: 'object', keys: Object.keys(v), sample: v };
+                    } else {
+                        fields[k] = v;
+                    }
+                }
+                return { _index: i, fields };
+            });
+
+            return res.status(200).json({
+                _debug: true,
+                _help: 'Shows top-level keys and first 3 sequence fields',
+                topLevelKeys: Object.keys(listRaw),
+                payloadKeys: listRaw.payload ? Object.keys(listRaw.payload) : null,
+                dataKeys: listRaw.data ? Object.keys(listRaw.data) : null,
+                itemCount: items ? items.length : 0,
+                sampleSequences: sample,
+                rawPage1: listRaw,
+            });
         }
 
         // Normal mode — use cache if available
