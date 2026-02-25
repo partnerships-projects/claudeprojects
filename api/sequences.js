@@ -210,40 +210,48 @@ module.exports = async function handler(req, res) {
                     return res.status(200).json({ _debug: true, endpoint: probe, error: e.message });
                 }
             }
+
+            // Auto-discover: probe multiple endpoints to find stats/prospects data
+            // Use a known sequence ID from page 1
             const listRaw = await apiGet('/v1/sequences?page=1', 1);
+            const items = Array.isArray(listRaw.payload) ? listRaw.payload : [];
+            const sampleId = items.length > 0 ? items[0].id : null;
 
-            // Extract items from response
-            let items = null;
-            const wrapper = listRaw.payload ?? listRaw.data ?? listRaw;
-            if (Array.isArray(wrapper)) items = wrapper;
-            else if (typeof wrapper === 'object') {
-                for (const k of Object.keys(wrapper)) {
-                    if (Array.isArray(wrapper[k])) { items = wrapper[k]; break; }
+            const probeEndpoints = sampleId ? [
+                `/v1/sequences/${sampleId}`,
+                `/v1/sequences/${sampleId}/statistics`,
+                `/v1/sequences/${sampleId}/stats`,
+                `/v1/sequences/${sampleId}/prospects`,
+                `/v1/sequences/${sampleId}/prospects?page=1`,
+                `/v1/sequences/${sampleId}/analytics`,
+                `/v1/sequences/${sampleId}/summary`,
+                `/v1/sequence-statistics/${sampleId}`,
+                `/v1/sequence/${sampleId}`,
+                `/v1/sequence/${sampleId}/prospects`,
+                `/v1/statistics/sequences/${sampleId}`,
+                `/v1/prospects?sequenceId=${sampleId}`,
+                `/v1/prospects?sequence_id=${sampleId}`,
+            ] : [];
+
+            const probeResults = {};
+            for (const ep of probeEndpoints) {
+                try {
+                    const data = await httpsGet(ep);
+                    probeResults[ep] = { status: 'OK', keys: Object.keys(data), data };
+                } catch (e) {
+                    probeResults[ep] = { status: 'ERROR', message: e.message.slice(0, 200) };
                 }
+                await sleep(500);
             }
-
-            // Show field analysis for first 3 sequences
-            const sample = (items || []).slice(0, 3).map((seq, i) => {
-                const fields = {};
-                for (const [k, v] of Object.entries(seq)) {
-                    if (v && typeof v === 'object' && !Array.isArray(v)) {
-                        fields[k] = { _type: 'object', keys: Object.keys(v), sample: v };
-                    } else {
-                        fields[k] = v;
-                    }
-                }
-                return { _index: i, fields };
-            });
 
             return res.status(200).json({
                 _debug: true,
-                _help: 'Shows top-level keys and first 3 sequence fields',
-                topLevelKeys: Object.keys(listRaw),
-                payloadKeys: listRaw.payload ? Object.keys(listRaw.payload) : null,
-                dataKeys: listRaw.data ? Object.keys(listRaw.data) : null,
-                itemCount: items ? items.length : 0,
-                sampleSequences: sample,
-                rawPage1: listRaw,
+                _help: 'Auto-probing endpoints for sequence detail/stats',
+                sampleSequenceId: sampleId,
+                sampleSequenceTitle: items[0]?.title,
+                totalOnPage1: items.length,
+                activeOnPage1: items.filter(s => s.active === true).length,
+                probeResults,
             });
         }
 
