@@ -93,19 +93,29 @@ async function fetchActiveSequenceList(startTime) {
             break;
         }
 
-        const items = Array.isArray(data.payload) ? data.payload : [];
+        const items = Array.isArray(data.payload) ? data.payload
+            : Array.isArray(data.data) ? data.data
+            : Array.isArray(data.sequences) ? data.sequences
+            : Array.isArray(data.items) ? data.items
+            : Array.isArray(data.results) ? data.results
+            : Array.isArray(data) ? data : [];
         if (items.length === 0) break;
         allSequences.push(...items);
-        if (items.length < 100) break;
+        if (items.length < 20) break;
         page++;
         await sleep(500);
     }
 
-    const active = allSequences.filter(s => s.active === true);
+    // NOTE: Do NOT use s.active === true — API returns active:false even for running sequences
+    const active = allSequences.filter(s => {
+        const status = (s.status || s.state || '').toString().toLowerCase();
+        const inactive = ['paused', 'stopped', 'archived', 'deleted', 'draft', 'disabled', 'completed', 'finished'];
+        return !inactive.includes(status);
+    });
     return {
         active: active.map(s => ({
             id: s.id,
-            name: s.title || `Sequence ${s.id}`,
+            name: s.name || s.title || `Sequence ${s.id}`,
             client: s.client?.companyName || null,
         })),
         totalInApi: allSequences.length,
