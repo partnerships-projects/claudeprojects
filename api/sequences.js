@@ -33,6 +33,7 @@ function httpsGet(urlPath) {
             method: 'GET',
             headers: {
                 'x-api-key': API_KEY,
+                'Authorization': `Bearer ${API_KEY}`,
                 'Content-Type': 'application/json',
             },
         };
@@ -216,12 +217,15 @@ async function fetchAllSequences() {
         if (items.length < 20) break; // fewer than typical page size → last page
         if (page >= 50) break;
         page++;
+        await new Promise(r => setTimeout(r, 300)); // rate limit delay
     }
 
-    // Filter out clearly inactive sequences
-    const inactive = ['paused', 'stopped', 'archived', 'deleted', 'draft', 'disabled'];
+    // Filter to only active sequences
     const active = allSequences.filter(seq => {
+        if (seq.active === true) return true;
+        if (seq.active === false) return false;
         const status = (seq.status || seq.state || '').toString().toLowerCase();
+        const inactive = ['paused', 'stopped', 'archived', 'deleted', 'draft', 'disabled'];
         return !inactive.includes(status);
     });
 
@@ -279,11 +283,14 @@ async function fetchAllSequences() {
     }
 
     const results = [];
-    const BATCH_SIZE = 5;
+    const BATCH_SIZE = 3;
     for (let i = 0; i < active.length; i += BATCH_SIZE) {
         const batch = active.slice(i, i + BATCH_SIZE);
         const batchResults = await Promise.all(batch.map(getSequenceCount));
         results.push(...batchResults);
+        if (i + BATCH_SIZE < active.length) {
+            await new Promise(r => setTimeout(r, 500)); // rate limit delay between batches
+        }
     }
 
     return results;

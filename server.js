@@ -464,6 +464,7 @@ async function fetchAllSequences() {
         if (items.length < 20) break;
         if (page >= 50) break;
         page++;
+        await new Promise(r => setTimeout(r, 300)); // rate limit delay
     }
 
     // Filter to only active sequences
@@ -477,14 +478,16 @@ async function fetchAllSequences() {
     });
     console.log(`  [INFO] Found ${allSequences.length} total sequences, ${active.length} active.`);
 
-    // Extract not-contacted counts
+    // Extract not-contacted counts with rate-limit-friendly delays
     const results = [];
+    const RATE_DELAY = 300; // ms between API calls to avoid rate limiting
 
-    for (const seq of active) {
+    for (let i = 0; i < active.length; i++) {
+        const seq = active[i];
         const id = seq.id ?? seq._id ?? seq.sequenceId;
         const name = seq.name ?? seq.title ?? seq.sequenceName ?? `Sequence ${id}`;
 
-        // Try embedded count first
+        // Try embedded count first (no API call needed)
         let count = seq.notContactedCount
             ?? seq.not_contacted_count
             ?? seq.notContacted
@@ -500,8 +503,9 @@ async function fetchAllSequences() {
         // If not embedded, fetch from detail endpoint
         if (count === null || count === undefined) {
             try {
+                await new Promise(r => setTimeout(r, RATE_DELAY));
                 const detail = await saleshandyGet(`/v1/sequences/${id}`);
-                const s = detail.data || detail;
+                const s = detail.payload || detail.data || detail;
                 count = s.notContactedCount ?? s.not_contacted_count
                     ?? s.notContacted ?? s.not_contacted
                     ?? s.prospects?.notContacted ?? s.prospects?.not_contacted
@@ -515,15 +519,18 @@ async function fetchAllSequences() {
         if (count === null || count === undefined) {
             for (const status of ['NOT_CONTACTED', 'notContacted', 'not_contacted']) {
                 try {
+                    await new Promise(r => setTimeout(r, RATE_DELAY));
                     const data = await saleshandyGet(`/v1/sequences/${id}/prospects?status=${status}`);
                     const total = data.total ?? data.totalCount ?? data.total_count
-                        ?? data.meta?.total ?? data.pagination?.total;
+                        ?? data.meta?.total ?? data.pagination?.total
+                        ?? data.payload?.total ?? data.payload?.totalCount;
                     if (total !== null && total !== undefined) { count = Number(total); break; }
                 } catch (_) {}
             }
         }
 
         results.push({ id, name, notContactedCount: count !== null ? Number(count) : null });
+        if ((i + 1) % 20 === 0) console.log(`  [INFO] Processed ${i + 1}/${active.length} sequences...`);
     }
 
     return results;
