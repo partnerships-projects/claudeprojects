@@ -449,8 +449,7 @@ async function fetchAllSequences() {
 
     while (true) {
         const data = await saleshandyGet(`/v1/sequences?page=${page}`);
-        if (page === 1) console.log(`  [DEBUG] API response keys:`, Object.keys(data), `| Sample:`, JSON.stringify(data).slice(0, 500));
-        const items = data.data || data.sequences || data.items || data.results || [];
+        const items = data.payload || data.data || data.sequences || data.items || data.results || [];
 
         if (!Array.isArray(items) || items.length === 0) {
             if (page === 1 && Array.isArray(data) && data.length > 0) {
@@ -467,12 +466,16 @@ async function fetchAllSequences() {
         page++;
     }
 
-    // Filter out clearly inactive sequences
-    const inactive = ['paused', 'stopped', 'archived', 'deleted', 'draft', 'disabled'];
+    // Filter to only active sequences
     const active = allSequences.filter(seq => {
+        if (seq.active === true) return true;
+        if (seq.active === false) return false;
+        // Fallback for other API formats
         const status = (seq.status || seq.state || '').toString().toLowerCase();
+        const inactive = ['paused', 'stopped', 'archived', 'deleted', 'draft', 'disabled'];
         return !inactive.includes(status);
     });
+    console.log(`  [INFO] Found ${allSequences.length} total sequences, ${active.length} active.`);
 
     // Extract not-contacted counts
     const results = [];
