@@ -199,60 +199,77 @@ module.exports = async function handler(req, res) {
     }
 
     try {
-        // Debug mode: ?debug=1
+        // Debug mode: ?debug=1 — fully self-contained, never falls through to cache
         if (req.query.debug === '1') {
-            const probe = req.query.probe;
-            if (probe) {
-                try {
-                    const data = await apiGet(probe, 1);
-                    return res.status(200).json({ _debug: true, endpoint: probe, raw: data });
-                } catch (e) {
-                    return res.status(200).json({ _debug: true, endpoint: probe, error: e.message });
+            try {
+                const probe = req.query.probe;
+                if (probe) {
+                    try {
+                        const data = await apiGet(probe, 1);
+                        return res.status(200).json({ _debug: true, endpoint: probe, raw: data });
+                    } catch (e) {
+                        return res.status(200).json({ _debug: true, endpoint: probe, error: e.message });
+                    }
                 }
-            }
 
-            // Auto-discover: probe multiple endpoints to find stats/prospects data
-            // Use a known sequence ID from page 1
-            const listRaw = await apiGet('/v1/sequences?page=1', 1);
-            const items = Array.isArray(listRaw.payload) ? listRaw.payload : [];
-            const sampleId = items.length > 0 ? items[0].id : null;
+                // Accept ?id=XXXX to skip the list fetch (avoids extra rate limit hit)
+                let sampleId = req.query.id || null;
+                let sampleTitle = null;
+                let listInfo = null;
 
-            const probeEndpoints = sampleId ? [
-                `/v1/sequences/${sampleId}`,
-                `/v1/sequences/${sampleId}/statistics`,
-                `/v1/sequences/${sampleId}/stats`,
-                `/v1/sequences/${sampleId}/prospects`,
-                `/v1/sequences/${sampleId}/prospects?page=1`,
-                `/v1/sequences/${sampleId}/analytics`,
-                `/v1/sequences/${sampleId}/summary`,
-                `/v1/sequence-statistics/${sampleId}`,
-                `/v1/sequence/${sampleId}`,
-                `/v1/sequence/${sampleId}/prospects`,
-                `/v1/statistics/sequences/${sampleId}`,
-                `/v1/prospects?sequenceId=${sampleId}`,
-                `/v1/prospects?sequence_id=${sampleId}`,
-            ] : [];
-
-            const probeResults = {};
-            for (const ep of probeEndpoints) {
-                try {
-                    const data = await httpsGet(ep);
-                    probeResults[ep] = { status: 'OK', keys: Object.keys(data), data };
-                } catch (e) {
-                    probeResults[ep] = { status: 'ERROR', message: e.message.slice(0, 200) };
+                if (!sampleId) {
+                    const listRaw = await apiGet('/v1/sequences?page=1', 1);
+                    const items = Array.isArray(listRaw.payload) ? listRaw.payload : [];
+                    sampleId = items.length > 0 ? items[0].id : null;
+                    sampleTitle = items[0]?.title;
+                    listInfo = { totalOnPage1: items.length, activeOnPage1: items.filter(s => s.active === true).length };
                 }
-                await sleep(500);
-            }
 
-            return res.status(200).json({
-                _debug: true,
-                _help: 'Auto-probing endpoints for sequence detail/stats',
-                sampleSequenceId: sampleId,
-                sampleSequenceTitle: items[0]?.title,
-                totalOnPage1: items.length,
-                activeOnPage1: items.filter(s => s.active === true).length,
-                probeResults,
-            });
+                const probeEndpoints = sampleId ? [
+                    `/v1/sequences/${sampleId}`,
+                    `/v1/sequences/${sampleId}/statistics`,
+                    `/v1/sequences/${sampleId}/stats`,
+                    `/v1/sequences/${sampleId}/prospects`,
+                    `/v1/sequences/${sampleId}/prospects?page=1`,
+                    `/v1/sequences/${sampleId}/analytics`,
+                    `/v1/sequences/${sampleId}/summary`,
+                    `/v1/sequence-statistics/${sampleId}`,
+                    `/v1/sequence/${sampleId}`,
+                    `/v1/sequence/${sampleId}/prospects`,
+                    `/v1/statistics/sequences/${sampleId}`,
+                    `/v1/prospects?sequenceId=${sampleId}`,
+                    `/v1/prospects?sequence_id=${sampleId}`,
+                ] : [];
+
+                const probeResults = {};
+                for (const ep of probeEndpoints) {
+                    try {
+                        const data = await httpsGet(ep);
+                        probeResults[ep] = { status: 'OK', keys: Object.keys(data), data };
+                    } catch (e) {
+                        const msg = e.message.slice(0, 300);
+                        probeResults[ep] = { status: e.isRateLimit ? 'RATE_LIMITED' : 'ERROR', message: msg };
+                        if (e.isRateLimit) await sleep(3000); // extra pause on rate limit
+                    }
+                    await sleep(1000);
+                }
+
+                return res.status(200).json({
+                    _debug: true,
+                    _help: 'Use ?debug=1&id=XXXX to skip list fetch. Probing endpoints for stats.',
+                    sampleSequenceId: sampleId,
+                    sampleSequenceTitle: sampleTitle,
+                    listInfo,
+                    probeResults,
+                });
+            } catch (debugErr) {
+                return res.status(200).json({
+                    _debug: true,
+                    error: debugErr.message,
+                    isRateLimit: !!debugErr.isRateLimit,
+                    hint: 'Rate limited. Wait 1-2 minutes then try: ?debug=1&id=KAPqxp1LwB',
+                });
+            }
         }
 
         // Normal mode — use cache if available
