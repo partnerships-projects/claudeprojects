@@ -15,91 +15,30 @@ const SALESHANDY_BASE = 'https://leo-open-api-gateway.saleshandy.com';
 const API_KEY = process.env.SALESHANDY_API_KEY || '';
 const THRESHOLD = Number(process.env.THRESHOLD) || 2000;
 
-// ── In-memory cache (persists while the function instance is warm) ───────────
+// ── In-memory cache ─────────────────────────────────────────────────────────
 
 let cachedData = null;
 let cacheTime = null;
 const CACHE_TTL = 3 * 60 * 60 * 1000; // 3 hours
 
-// ── HTTP helper with rate-limit awareness ────────────────────────────────────
+// ── HTTP helpers ────────────────────────────────────────────────────────────
 
-function httpsGet(urlPath) {
+function httpsRequest(method, urlPath, body) {
     return new Promise((resolve, reject) => {
         const url = new URL(urlPath, SALESHANDY_BASE);
+        const postData = body ? JSON.stringify(body) : null;
         const options = {
             hostname: url.hostname,
             port: 443,
             path: url.pathname + url.search,
-            method: 'GET',
+            method,
             headers: {
                 'x-api-key': API_KEY,
                 'Authorization': `Bearer ${API_KEY}`,
                 'Content-Type': 'application/json',
             },
         };
-
-        const req = https.request(options, (res) => {
-            let body = '';
-            res.on('data', (chunk) => body += chunk);
-            res.on('end', () => {
-                if (res.statusCode === 429 || (res.statusCode === 400 && body.includes('Rate Limit'))) {
-                    reject(Object.assign(new Error('RATE_LIMITED'), { isRateLimit: true }));
-                    return;
-                }
-                if (res.statusCode >= 400) {
-                    let detail = body;
-                    try { detail = JSON.stringify(JSON.parse(body), null, 2); } catch (_) {}
-                    reject(new Error(`SalesHandy API ${res.statusCode} on ${urlPath}\n${detail}`));
-                    return;
-                }
-                try { resolve(JSON.parse(body)); }
-                catch (e) { reject(new Error(`Invalid JSON from ${urlPath}: ${body.slice(0, 200)}`)); }
-            });
-        });
-
-        req.on('error', (err) => reject(new Error(`Network error on ${urlPath}: ${err.message}`)));
-        req.setTimeout(15000, () => { req.destroy(); reject(new Error(`Timeout on ${urlPath}`)); });
-        req.end();
-    });
-}
-
-async function apiGet(urlPath, retries = 3) {
-    let lastErr;
-    for (let attempt = 1; attempt <= retries; attempt++) {
-        try {
-            return await httpsGet(urlPath);
-        } catch (err) {
-            lastErr = err;
-            if (err.isRateLimit) {
-                // Wait longer on rate limit: 3s, 6s, 12s
-                const delay = Math.pow(2, attempt) * 1500;
-                await new Promise(r => setTimeout(r, delay));
-                continue;
-            }
-            const isTransient = err.message.includes('API 5') || err.message.includes('Network error') || err.message.includes('Timeout');
-            if (!isTransient || attempt === retries) break;
-            await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000));
-        }
-    }
-    throw lastErr;
-}
-
-function httpsPost(urlPath, body) {
-    return new Promise((resolve, reject) => {
-        const url = new URL(urlPath, SALESHANDY_BASE);
-        const postData = JSON.stringify(body);
-        const options = {
-            hostname: url.hostname,
-            port: 443,
-            path: url.pathname + url.search,
-            method: 'POST',
-            headers: {
-                'x-api-key': API_KEY,
-                'Authorization': `Bearer ${API_KEY}`,
-                'Content-Type': 'application/json',
-                'Content-Length': Buffer.byteLength(postData),
-            },
-        };
+        if (postData) options.headers['Content-Length'] = Buffer.byteLength(postData);
 
         const req = https.request(options, (res) => {
             let responseBody = '';
@@ -112,118 +51,138 @@ function httpsPost(urlPath, body) {
                 if (res.statusCode >= 400) {
                     let detail = responseBody;
                     try { detail = JSON.stringify(JSON.parse(responseBody), null, 2); } catch (_) {}
-                    reject(new Error(`POST ${res.statusCode} on ${urlPath}\n${detail}`));
+                    reject(new Error(`${method} ${res.statusCode} on ${urlPath}\n${detail}`));
                     return;
                 }
                 try { resolve(JSON.parse(responseBody)); }
-                catch (e) { reject(new Error(`Invalid JSON from POST ${urlPath}: ${responseBody.slice(0, 200)}`)); }
+                catch (e) { reject(new Error(`Invalid JSON from ${method} ${urlPath}`)); }
             });
         });
 
-        req.on('error', (err) => reject(new Error(`Network error on POST ${urlPath}: ${err.message}`)));
-        req.setTimeout(15000, () => { req.destroy(); reject(new Error(`Timeout on POST ${urlPath}`)); });
-        req.write(postData);
+        req.on('error', (err) => reject(new Error(`Network error: ${err.message}`)));
+        req.setTimeout(15000, () => { req.destroy(); reject(new Error(`Timeout on ${method} ${urlPath}`)); });
+        if (postData) req.write(postData);
         req.end();
     });
 }
 
+async function apiCall(method, urlPath, body, retries = 3) {
+    let lastErr;
+    for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+            return await httpsRequest(method, urlPath, body);
+        } catch (err) {
+            lastErr = err;
+            if (err.isRateLimit) {
+                const delay = Math.pow(2, attempt) * 1500;
+                await new Promise(r => setTimeout(r, delay));
+                continue;
+            }
+            const isTransient = err.message.includes('5') && err.message.includes('on /') || err.message.includes('Network') || err.message.includes('Timeout');
+            if (!isTransient || attempt === retries) break;
+            await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000));
+        }
+    }
+    throw lastErr;
+}
+
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-// ── Sequence fetching (list only — no per-sequence detail calls) ─────────────
+// ── Fetch active sequences + stats ──────────────────────────────────────────
 
-async function fetchAllSequences() {
+async function fetchSequencesWithStats() {
+    const startTime = Date.now();
+    const TIME_LIMIT = 50000; // 50s to leave room for response
+    const elapsed = () => Date.now() - startTime;
+
+    // Step 1: Fetch all sequences (paginated, 100 per page)
     const allSequences = [];
     let page = 1;
-    let rateLimited = false;
-    const startTime = Date.now();
-    const TIME_LIMIT = 45000; // stop fetching at 45s to leave room for response
 
-    while (true) {
-        // Safety: stop if we're running out of time
-        if (Date.now() - startTime > TIME_LIMIT) break;
-
+    while (elapsed() < 20000) { // max 20s for sequence listing
         let data;
         try {
-            // SalesHandy API only accepts "page" — no other query params allowed
-            data = await apiGet(`/v1/sequences?page=${page}`);
+            data = await apiCall('GET', `/v1/sequences?page=${page}`);
         } catch (err) {
-            if (err.isRateLimit) {
-                rateLimited = true;
-                break; // stop gracefully, return what we have so far
-            }
+            if (err.isRateLimit) break;
             throw err;
         }
 
-        let items = null;
-        for (const key of ['payload', 'data', 'sequences', 'items', 'results', 'list']) {
-            if (Array.isArray(data[key])) { items = data[key]; break; }
-        }
-        if (!items) {
-            for (const wrapKey of ['payload', 'data']) {
-                if (data[wrapKey] && typeof data[wrapKey] === 'object') {
-                    for (const key of ['list', 'sequences', 'items', 'results', 'data']) {
-                        if (Array.isArray(data[wrapKey][key])) { items = data[wrapKey][key]; break; }
-                    }
-                    if (items) break;
-                }
-            }
-        }
-        if (!items && Array.isArray(data)) items = data;
-        if (!items) items = [];
-
+        const items = Array.isArray(data.payload) ? data.payload : [];
         if (items.length === 0) break;
-
         allSequences.push(...items);
-
-        const totalPages =
-            data.totalPages ?? data.total_pages ??
-            data.payload?.totalPages ?? data.payload?.total_pages ??
-            data.data?.totalPages ?? data.data?.total_pages ??
-            data.meta?.totalPages ?? data.meta?.last_page ?? null;
-
-        if (totalPages !== null && page >= totalPages) break;
-        if (items.length < 20) break;
-        if (page >= 200) break;
+        if (items.length < 100) break; // last page
         page++;
-        await sleep(2000); // 2 seconds between pages to respect rate limits
+        await sleep(1500);
     }
 
-    // Filter to only active sequences
-    const active = allSequences.filter(seq => {
-        if (seq.active === true) return true;
-        if (seq.active === false) return false;
-        const status = (seq.status || seq.state || '').toString().toLowerCase();
-        const inactive = ['paused', 'stopped', 'archived', 'deleted', 'draft', 'disabled'];
-        return !inactive.includes(status);
-    });
+    // Step 2: Filter to active sequences only
+    const activeSequences = allSequences.filter(seq => seq.active === true);
 
-    // Map to result format — use embedded counts if available, otherwise null
-    const sequences = active.map(seq => {
-        const id = seq.id ?? seq._id ?? seq.sequenceId;
-        const name = seq.name ?? seq.title ?? seq.sequenceName ?? `Sequence ${id}`;
+    // Step 3: Fetch stats for each active sequence via POST /v1/analytics/stats
+    const results = [];
+    let statsRateLimited = false;
 
-        // Try to extract count from embedded data
-        const count = seq.notContactedCount
-            ?? seq.not_contacted_count
-            ?? seq.notContacted
-            ?? seq.not_contacted
-            ?? seq.prospects?.notContacted
-            ?? seq.prospects?.not_contacted
-            ?? seq.stats?.notContacted
-            ?? seq.stats?.not_contacted
-            ?? seq.prospectStats?.notContacted
-            ?? seq.prospectStats?.not_contacted
-            ?? null;
+    for (const seq of activeSequences) {
+        if (elapsed() > TIME_LIMIT) break;
 
-        return { id, name, notContactedCount: count !== null ? Number(count) : null };
-    });
+        let notContacted = null;
+        let total = null;
+        try {
+            const stats = await apiCall('POST', '/v1/analytics/stats', { sequenceId: seq.id }, 2);
+            const prospects = stats.payload?.prospects?.[0];
+            if (prospects) {
+                notContacted = Number(prospects.notContacted) || 0;
+                total = Number(prospects.total) || 0;
+            }
+        } catch (err) {
+            if (err.isRateLimit) {
+                statsRateLimited = true;
+                // Still add this sequence without stats, then stop fetching more
+                results.push({
+                    id: seq.id,
+                    name: seq.title || `Sequence ${seq.id}`,
+                    notContactedCount: null,
+                    totalProspects: null,
+                    client: seq.client?.companyName || null,
+                });
+                break;
+            }
+            // Non-rate-limit error: add sequence without stats, continue
+        }
+
+        results.push({
+            id: seq.id,
+            name: seq.title || `Sequence ${seq.id}`,
+            notContactedCount: notContacted,
+            totalProspects: total,
+            client: seq.client?.companyName || null,
+        });
+
+        await sleep(1500); // respect rate limits
+    }
+
+    // Add remaining active sequences without stats if we ran out of time/got rate limited
+    const fetchedIds = new Set(results.map(r => r.id));
+    for (const seq of activeSequences) {
+        if (!fetchedIds.has(seq.id)) {
+            results.push({
+                id: seq.id,
+                name: seq.title || `Sequence ${seq.id}`,
+                notContactedCount: null,
+                totalProspects: null,
+                client: seq.client?.companyName || null,
+            });
+        }
+    }
 
     return {
-        sequences,
-        totalFetched: allSequences.length,
-        pagesFetched: page,
-        rateLimited,
-        partial: rateLimited || (Date.now() - startTime > TIME_LIMIT),
+        sequences: results,
+        totalSequences: allSequences.length,
+        activeCount: activeSequences.length,
+        statsCompleted: results.filter(r => r.notContactedCount !== null).length,
+        statsRateLimited,
+        elapsedMs: elapsed(),
     };
 }
 
@@ -236,77 +195,21 @@ module.exports = async function handler(req, res) {
 
     if (!API_KEY) {
         res.status(500).json({
-            error: 'SALESHANDY_API_KEY environment variable is not set. Add it in Vercel dashboard → Settings → Environment Variables.',
+            error: 'SALESHANDY_API_KEY environment variable is not set.',
         });
         return;
     }
 
     try {
-        // Debug mode: ?debug=1 — fully self-contained, never falls through to cache
-        if (req.query.debug === '1') {
+        // Debug: probe a specific endpoint
+        if (req.query.debug === '1' && req.query.probe) {
             try {
-                const probe = req.query.probe;
-                if (probe) {
-                    try {
-                        const data = await apiGet(probe, 1);
-                        return res.status(200).json({ _debug: true, endpoint: probe, raw: data });
-                    } catch (e) {
-                        return res.status(200).json({ _debug: true, endpoint: probe, error: e.message });
-                    }
-                }
-
-                // Accept ?id=XXXX to skip the list fetch (avoids extra rate limit hit)
-                let sampleId = req.query.id || null;
-                let sampleTitle = null;
-                let listInfo = null;
-
-                if (!sampleId) {
-                    const listRaw = await apiGet('/v1/sequences?page=1', 1);
-                    const items = Array.isArray(listRaw.payload) ? listRaw.payload : [];
-                    sampleId = items.length > 0 ? items[0].id : null;
-                    sampleTitle = items[0]?.title;
-                    listInfo = { totalOnPage1: items.length, activeOnPage1: items.filter(s => s.active === true).length };
-                }
-
-                // Probe POST /v1/analytics/stats with various body formats
-                const postProbes = [
-                    { path: '/v1/analytics/stats', body: { sequenceId: sampleId } },
-                    { path: '/v1/analytics/stats', body: { sequence_id: sampleId } },
-                    { path: '/v1/analytics/stats', body: { id: sampleId } },
-                    { path: '/v1/analytics/stats', body: { sequenceIds: [sampleId] } },
-                    { path: '/v1/analytics/stats', body: {} },
-                    { path: '/v1/analytics/consolidated-stats', body: { sequenceIds: [sampleId] } },
-                    { path: '/v1/analytics/consolidated-stats', body: { sequenceId: sampleId } },
-                    { path: '/v1/analytics/consolidated-stats', body: {} },
-                ];
-
-                const probeResults = {};
-                for (const { path, body } of postProbes) {
-                    const key = `POST ${path} ${JSON.stringify(body)}`;
-                    try {
-                        const data = await httpsPost(path, body);
-                        probeResults[key] = { status: 'OK', data };
-                    } catch (e) {
-                        const msg = e.message.slice(0, 500);
-                        probeResults[key] = { status: e.isRateLimit ? 'RATE_LIMITED' : 'ERROR', message: msg };
-                        if (e.isRateLimit) await sleep(3000);
-                    }
-                    await sleep(1500);
-                }
-
-                return res.status(200).json({
-                    _debug: true,
-                    _help: 'Probing POST /v1/analytics/stats with various body formats',
-                    sampleSequenceId: sampleId,
-                    probeResults,
-                });
-            } catch (debugErr) {
-                return res.status(200).json({
-                    _debug: true,
-                    error: debugErr.message,
-                    isRateLimit: !!debugErr.isRateLimit,
-                    hint: 'Rate limited. Wait 1-2 minutes then try: ?debug=1&id=KAPqxp1LwB',
-                });
+                const data = req.query.method === 'POST'
+                    ? await httpsRequest('POST', req.query.probe, JSON.parse(req.query.body || '{}'))
+                    : await httpsRequest('GET', req.query.probe);
+                return res.status(200).json({ _debug: true, endpoint: req.query.probe, raw: data });
+            } catch (e) {
+                return res.status(200).json({ _debug: true, endpoint: req.query.probe, error: e.message });
             }
         }
 
@@ -323,7 +226,7 @@ module.exports = async function handler(req, res) {
             });
         }
 
-        const result = await fetchAllSequences();
+        const result = await fetchSequencesWithStats();
         cachedData = result.sequences;
         cacheTime = Date.now();
 
@@ -334,11 +237,11 @@ module.exports = async function handler(req, res) {
             threshold: THRESHOLD,
             lastUpdated: new Date(cacheTime).toISOString(),
             _meta: {
-                totalFetched: result.totalFetched,
-                activeCount: result.sequences.length,
-                pagesFetched: result.pagesFetched,
-                partial: result.partial,
-                rateLimited: result.rateLimited,
+                totalSequences: result.totalSequences,
+                activeCount: result.activeCount,
+                statsCompleted: result.statsCompleted,
+                statsRateLimited: result.statsRateLimited,
+                elapsedMs: result.elapsedMs,
             },
         });
     } catch (err) {
