@@ -44,7 +44,8 @@ function httpsRequest(method, urlPath, body) {
             let responseBody = '';
             res.on('data', (chunk) => responseBody += chunk);
             res.on('end', () => {
-                if (res.statusCode === 429) {
+                // SalesHandy returns rate limits as 400 (not 429)
+                if (res.statusCode === 429 || (res.statusCode === 400 && responseBody.includes('Rate Limit'))) {
                     reject(Object.assign(new Error('RATE_LIMITED'), { isRateLimit: true }));
                     return;
                 }
