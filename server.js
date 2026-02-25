@@ -449,6 +449,7 @@ async function fetchAllSequences() {
 
     while (true) {
         const data = await saleshandyGet(`/v1/sequences?page=${page}`);
+        if (page === 1) console.log(`  [DEBUG] API response keys:`, Object.keys(data), `| Sample:`, JSON.stringify(data).slice(0, 500));
         const items = data.data || data.sequences || data.items || data.results || [];
 
         if (!Array.isArray(items) || items.length === 0) {
