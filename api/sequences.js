@@ -91,9 +91,10 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 async function fetchAllSequences() {
     const allSequences = [];
     let page = 1;
+    const PAGE_SIZE = 100; // request more items per page to reduce total API calls
 
     while (true) {
-        const data = await apiGet(`/v1/sequences?page=${page}`);
+        const data = await apiGet(`/v1/sequences?page=${page}&limit=${PAGE_SIZE}&per_page=${PAGE_SIZE}&pageSize=${PAGE_SIZE}`);
 
         let items = null;
         for (const key of ['payload', 'data', 'sequences', 'items', 'results', 'list']) {
@@ -123,10 +124,10 @@ async function fetchAllSequences() {
             data.meta?.totalPages ?? data.meta?.last_page ?? null;
 
         if (totalPages !== null && page >= totalPages) break;
-        if (items.length < 20) break;
+        if (items.length < PAGE_SIZE) break;
         if (page >= 200) break;
         page++;
-        await sleep(1000); // 1 second between pages to respect rate limits
+        await sleep(2000); // 2 seconds between pages to respect rate limits
     }
 
     // Filter to only active sequences
