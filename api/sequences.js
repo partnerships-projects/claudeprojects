@@ -202,15 +202,55 @@ module.exports = async function handler(req, res) {
     }
 
     try {
-        // Debug: probe a specific endpoint
-        if (req.query.debug === '1' && req.query.probe) {
+        // Debug: search for specific sequences across ALL pages
+        if (req.query.debug === '1') {
             try {
-                const data = req.query.method === 'POST'
-                    ? await httpsRequest('POST', req.query.probe, JSON.parse(req.query.body || '{}'))
-                    : await httpsRequest('GET', req.query.probe);
-                return res.status(200).json({ _debug: true, endpoint: req.query.probe, raw: data });
+                const searchTerms = ['MVM', 'Suno', 'Follwr', 'Persona Space', 'UP/IG'];
+                const allSeqs = [];
+                let page = 1;
+
+                while (page <= 20) {
+                    const data = await apiCall('GET', `/v1/sequences?page=${page}`, null, 2);
+                    const items = Array.isArray(data.payload) ? data.payload : [];
+                    if (items.length === 0) break;
+                    allSeqs.push(...items);
+                    if (items.length < 100) break;
+                    page++;
+                    await sleep(1500);
+                }
+
+                // Find sequences matching search terms
+                const matches = allSeqs.filter(seq =>
+                    searchTerms.some(term => (seq.title || '').includes(term))
+                );
+
+                // Also show field analysis: unique values of `active` and `progress`
+                const activeTrue = allSeqs.filter(s => s.active === true).length;
+                const activeFalse = allSeqs.filter(s => s.active === false).length;
+                const progressValues = {};
+                allSeqs.forEach(s => {
+                    const key = `progress=${s.progress},active=${s.active}`;
+                    progressValues[key] = (progressValues[key] || 0) + 1;
+                });
+
+                return res.status(200).json({
+                    _debug: true,
+                    totalSequences: allSeqs.length,
+                    pagesFetched: page,
+                    fieldAnalysis: { activeTrue, activeFalse, progressCombinations: progressValues },
+                    matchingSequences: matches.map(s => ({
+                        id: s.id, title: s.title, active: s.active, progress: s.progress,
+                        client: s.client, steps: s.steps?.length, subSequences: s.subSequences?.length,
+                        allKeys: Object.keys(s),
+                    })),
+                    // Show last 5 sequences (newest) for comparison
+                    lastFiveSequences: allSeqs.slice(-5).map(s => ({
+                        id: s.id, title: s.title, active: s.active, progress: s.progress,
+                        client: s.client,
+                    })),
+                });
             } catch (e) {
-                return res.status(200).json({ _debug: true, endpoint: req.query.probe, error: e.message });
+                return res.status(200).json({ _debug: true, error: e.message, isRateLimit: !!e.isRateLimit });
             }
         }
 
