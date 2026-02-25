@@ -225,26 +225,33 @@ module.exports = async function handler(req, res) {
                     listInfo = { totalOnPage1: items.length, activeOnPage1: items.filter(s => s.active === true).length };
                 }
 
-                // Round 2: probe top-level endpoints + OpenAPI spec + prospects
-                const probeEndpoints = [
-                    // OpenAPI/Swagger spec discovery
-                    `/api-doc/swagger.json`,
-                    `/swagger.json`,
-                    `/openapi.json`,
-                    `/v1/openapi.json`,
-                    // Top-level resource endpoints (no params = discover what's available)
-                    `/v1/prospects`,
-                    `/v1/prospects?page=1`,
-                    `/v1/sequence-statistics`,
-                    `/v1/statistics`,
-                    `/v1/analytics`,
-                    // Alternate path patterns for sequence stats
-                    `/v1/sequences/statistics`,
-                    `/v1/sequences/stats`,
-                    `/v1/sequence-statistics?page=1`,
+                // Round 3: try alternate host + /api/v1/ prefix + sequence stats
+                const ALT_HOST = 'https://open-api.saleshandy.com';
+
+                // Probe on the alternate host (open-api.saleshandy.com)
+                const altProbes = [
+                    `${ALT_HOST}/api-doc/swagger-spec.json`,
+                    `${ALT_HOST}/api-doc-json`,
+                    `${ALT_HOST}/v1/sequences?page=1`,
+                    `${ALT_HOST}/v1/sequence-statistics?page=1`,
+                    `${ALT_HOST}/api/v1/sequences?page=1`,
+                    `${ALT_HOST}/api/v1/sequence-statistics?page=1`,
+                    `${ALT_HOST}/api/v1/sequence-statistics`,
                 ];
 
+                // Also try /api/v1/ prefix on the current host
+                const mainProbes = sampleId ? [
+                    `/api/v1/sequences?page=1`,
+                    `/api/v1/sequence-statistics`,
+                    `/api/v1/sequence-statistics?page=1`,
+                    `/api/v1/sequences/${sampleId}/statistics`,
+                    `/api/v1/sequences/statistics?page=1`,
+                ] : [];
+
+                const probeEndpoints = [...mainProbes];
+
                 const probeResults = {};
+                // Probe main host endpoints
                 for (const ep of probeEndpoints) {
                     try {
                         const data = await httpsGet(ep);
@@ -252,7 +259,20 @@ module.exports = async function handler(req, res) {
                     } catch (e) {
                         const msg = e.message.slice(0, 300);
                         probeResults[ep] = { status: e.isRateLimit ? 'RATE_LIMITED' : 'ERROR', message: msg };
-                        if (e.isRateLimit) await sleep(3000); // extra pause on rate limit
+                        if (e.isRateLimit) await sleep(3000);
+                    }
+                    await sleep(1000);
+                }
+
+                // Probe alternate host (open-api.saleshandy.com)
+                for (const ep of altProbes) {
+                    try {
+                        const data = await httpsGet(ep);
+                        probeResults[ep] = { status: 'OK', keys: Object.keys(data), data: typeof data === 'object' ? (Array.isArray(data) ? `[array:${data.length}]` : Object.keys(data)) : data };
+                    } catch (e) {
+                        const msg = e.message.slice(0, 300);
+                        probeResults[ep] = { status: e.isRateLimit ? 'RATE_LIMITED' : 'ERROR', message: msg };
+                        if (e.isRateLimit) await sleep(3000);
                     }
                     await sleep(1000);
                 }
