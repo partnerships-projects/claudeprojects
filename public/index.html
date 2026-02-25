@@ -216,10 +216,16 @@ function setAutoRefresh() {
     }
 }
 
+var pendingRefreshTimer = null;
+
 async function fetchData(forceRefresh) {
+    if (pendingRefreshTimer) { clearTimeout(pendingRefreshTimer); pendingRefreshTimer = null; }
     const btn = document.getElementById('btn-refresh');
     btn.disabled = true;
-    document.getElementById('results').classList.add('hidden');
+    // Only hide results on first load (when nothing is shown yet)
+    if (!document.getElementById('tbody-all').innerHTML) {
+        document.getElementById('results').classList.add('hidden');
+    }
     document.getElementById('loader').classList.add('active');
     setStatus('info', 'Fetching sequences from SalesHandy...');
 
@@ -249,17 +255,16 @@ async function fetchData(forceRefresh) {
             if (meta.activeSequences === 0 && meta.totalInApi > 0) {
                 errMsg = 'Found ' + meta.totalInApi + ' sequences in API but none are active.';
             } else if (meta.listRateLimited) {
-                errMsg = 'Rate limited by SalesHandy API. Auto-retrying in 30 seconds...';
-                setTimeout(function() { fetchData(true); }, 30000);
+                errMsg = 'Rate limited by SalesHandy API. Auto-retrying in 15s...';
+                pendingRefreshTimer = setTimeout(function() { fetchData(true); }, 15000);
             }
             setStatus('error', errMsg);
             return;
         }
 
         if (!hasSequences && hasPending) {
-            // Stats haven't loaded yet — show loading message, auto-retry
-            setStatus('info', 'Found ' + meta.activeSequences + ' active sequences. Loading stats... auto-refreshing in 30s.');
-            setTimeout(function() { fetchData(true); }, 30000);
+            setStatus('info', 'Found ' + (meta.activeInApi || '?') + ' active sequences. Loading stats... auto-refreshing in 15s.');
+            pendingRefreshTimer = setTimeout(function() { fetchData(true); }, 15000);
             return;
         }
 
@@ -272,11 +277,11 @@ async function fetchData(forceRefresh) {
         if (data.warning) {
             setStatus('info', data.warning);
         } else if (hasPending) {
-            setStatus('info', 'Loaded ' + data.sequences.length + ' sequences. ' + meta.pendingStats + ' more loading stats — auto-refreshing in 30s...');
-            setTimeout(function() { fetchData(true); }, 30000);
+            setStatus('info', 'Loaded ' + data.sequences.length + ' sequences. ' + meta.pendingStats + ' more loading — auto-refreshing in 15s...');
+            pendingRefreshTimer = setTimeout(function() { fetchData(true); }, 15000);
         } else if (meta.statsRateLimited) {
-            setStatus('info', 'Loaded ' + data.sequences.length + ' sequences. Rate limited — auto-retrying in 60s...');
-            setTimeout(function() { fetchData(true); }, 60000);
+            setStatus('info', 'Loaded ' + data.sequences.length + ' sequences. Rate limited — auto-retrying in 30s...');
+            pendingRefreshTimer = setTimeout(function() { fetchData(true); }, 30000);
         } else {
             setStatus('success', 'Loaded ' + data.sequences.length + ' sequences with uncontacted prospects.');
         }

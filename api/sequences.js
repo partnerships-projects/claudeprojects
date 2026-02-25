@@ -2,17 +2,10 @@
 // Vercel Serverless Function — SalesHandy Sequence Data
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// Environment variables (set in Vercel dashboard):
-//   SALESHANDY_API_KEY  — your SalesHandy API key (required)
-//   THRESHOLD           — prospect count threshold (default: 2000)
-//
-// Returns JSON: { sequences, threshold, lastUpdated }
-//
-// Strategy:
-//   1. Fetch all sequences, filter to active=true (~66 real + some ghost)
-//   2. Fetch stats individually via POST /v1/analytics/stats
-//   3. Progressive: each request fetches more stats, cache persists in memory
-//   4. Only show sequences where notContacted > 0 (filters out ghost sequences)
+// Optimized for Vercel Hobby plan (10s timeout):
+//   - Parallel batch stats fetching (3 concurrent)
+//   - Progressive cache across warm requests
+//   - Auto-refresh from frontend fills in remaining stats
 // ─────────────────────────────────────────────────────────────────────────────
 
 const https = require('https');
@@ -21,25 +14,24 @@ const SALESHANDY_BASE = 'https://leo-open-api-gateway.saleshandy.com';
 const API_KEY = process.env.SALESHANDY_API_KEY || '';
 const THRESHOLD = Number(process.env.THRESHOLD) || 2000;
 
-// ── In-memory progressive cache ───────────────────────────────────────────
-// These persist across requests on the SAME warm Vercel instance.
+// Time budget: 8s (2s buffer for Vercel's 10s limit on Hobby plan)
+const TIME_BUDGET = 8000;
+const HTTP_TIMEOUT = 5000;
+const BATCH_SIZE = 3; // concurrent stats requests per batch
 
-let cachedSeqList = [];        // active sequences from API [{id, name, client}]
+// ── In-memory progressive cache (persists on warm instances) ──────────────
+
+let cachedSeqList = [];
 let seqListFetchedAt = 0;
-
-// Stats cache: { sequenceId: { notContacted, total, contacted, fetchedAt } }
-// Ghost sequences get cached with notContacted=0, so we won't re-fetch them
-let statsCache = {};
-
-// Final response cache (short TTL — just to avoid hammering on rapid reloads)
+let statsCache = {};           // { seqId: { notContacted, total, contacted, fetchedAt } }
 let lastResponse = null;
 let lastResponseAt = 0;
-const RESPONSE_CACHE_TTL = 60 * 1000; // 1 minute
 
-const SEQ_LIST_TTL = 15 * 60 * 1000;  // 15 min for sequence list
-const STATS_TTL = 60 * 60 * 1000;     // 1 hour for individual stats
+const RESPONSE_CACHE_TTL = 45 * 1000;  // 45s — prevents double-fetching on rapid reload
+const SEQ_LIST_TTL = 15 * 60 * 1000;   // 15 min
+const STATS_TTL = 60 * 60 * 1000;      // 1 hour
 
-// ── HTTP helpers ────────────────────────────────────────────────────────────
+// ── HTTP helper ─────────────────────────────────────────────────────────────
 
 function httpsRequest(method, urlPath, body) {
     return new Promise((resolve, reject) => {
@@ -67,9 +59,7 @@ function httpsRequest(method, urlPath, body) {
                     return;
                 }
                 if (res.statusCode >= 400) {
-                    let detail = responseBody;
-                    try { detail = JSON.stringify(JSON.parse(responseBody), null, 2); } catch (_) {}
-                    reject(new Error(`${method} ${res.statusCode} on ${urlPath}\n${detail}`));
+                    reject(new Error(`${method} ${res.statusCode} on ${urlPath}`));
                     return;
                 }
                 try { resolve(JSON.parse(responseBody)); }
@@ -78,35 +68,15 @@ function httpsRequest(method, urlPath, body) {
         });
 
         req.on('error', (err) => reject(new Error(`Network error: ${err.message}`)));
-        req.setTimeout(15000, () => { req.destroy(); reject(new Error(`Timeout on ${method} ${urlPath}`)); });
+        req.setTimeout(HTTP_TIMEOUT, () => { req.destroy(); reject(new Error('Timeout')); });
         if (postData) req.write(postData);
         req.end();
     });
 }
 
-async function apiCall(method, urlPath, body, retries = 3) {
-    let lastErr;
-    for (let attempt = 1; attempt <= retries; attempt++) {
-        try {
-            return await httpsRequest(method, urlPath, body);
-        } catch (err) {
-            lastErr = err;
-            if (err.isRateLimit) {
-                const delay = Math.pow(2, attempt) * 1500;
-                await new Promise(r => setTimeout(r, delay));
-                continue;
-            }
-            const isTransient = err.message.includes('Network') || err.message.includes('Timeout');
-            if (!isTransient || attempt === retries) break;
-            await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 1000));
-        }
-    }
-    throw lastErr;
-}
-
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-// ── Fetch active sequence list (all pages) ────────────────────────────────
+// ── Fetch active sequence list ────────────────────────────────────────────
 
 async function fetchActiveSequenceList(startTime) {
     const elapsed = () => Date.now() - startTime;
@@ -114,13 +84,13 @@ async function fetchActiveSequenceList(startTime) {
     let page = 1;
     let rateLimited = false;
 
-    while (elapsed() < 25000) {
+    while (elapsed() < TIME_BUDGET - 2000) { // leave 2s for stats
         let data;
         try {
-            data = await apiCall('GET', `/v1/sequences?page=${page}`, null, 2);
+            data = await httpsRequest('GET', `/v1/sequences?page=${page}`, null);
         } catch (err) {
             if (err.isRateLimit) { rateLimited = true; break; }
-            throw err;
+            break;
         }
 
         const items = Array.isArray(data.payload) ? data.payload : [];
@@ -128,7 +98,7 @@ async function fetchActiveSequenceList(startTime) {
         allSequences.push(...items);
         if (items.length < 100) break;
         page++;
-        await sleep(1200);
+        await sleep(500);
     }
 
     const active = allSequences.filter(s => s.active === true);
@@ -144,13 +114,30 @@ async function fetchActiveSequenceList(startTime) {
     };
 }
 
-// ── Fetch stats progressively ─────────────────────────────────────────────
+// ── Fetch one stat (no retry — just fail fast) ───────────────────────────
 
-async function fetchStatsProgressive(activeSequences, startTime) {
+async function fetchOneStat(seq) {
+    try {
+        const stats = await httpsRequest('POST', '/v1/analytics/stats', { sequenceId: seq.id });
+        const prospects = stats.payload?.prospects?.[0];
+        return {
+            id: seq.id,
+            notContacted: prospects ? (Number(prospects.notContacted) || 0) : 0,
+            total: prospects ? (Number(prospects.total) || 0) : 0,
+            contacted: prospects ? (Number(prospects.contacted) || 0) : 0,
+            ok: true,
+        };
+    } catch (err) {
+        return { id: seq.id, isRateLimit: !!err.isRateLimit, ok: false };
+    }
+}
+
+// ── Fetch stats in parallel batches ──────────────────────────────────────
+
+async function fetchStatsParallel(activeSequences, startTime) {
     const elapsed = () => Date.now() - startTime;
     const now = Date.now();
 
-    // Which sequences need stats? (not cached or stale)
     const needStats = activeSequences.filter(s => {
         const cached = statsCache[s.id];
         if (!cached) return true;
@@ -158,59 +145,58 @@ async function fetchStatsProgressive(activeSequences, startTime) {
         return false;
     });
 
-    let statsFetched = 0;
-    let statsRateLimited = false;
-    const alreadyCached = activeSequences.length - needStats.length;
+    let fetched = 0;
+    let rateLimited = false;
 
-    // Fetch stats one at a time with minimal delay
-    const TIME_LIMIT = 50000; // leave 10s buffer for Vercel's 60s limit
+    // Process in batches of BATCH_SIZE
+    for (let i = 0; i < needStats.length; i += BATCH_SIZE) {
+        if (elapsed() > TIME_BUDGET || rateLimited) break;
 
-    for (let i = 0; i < needStats.length; i++) {
-        if (elapsed() > TIME_LIMIT || statsRateLimited) break;
+        const batch = needStats.slice(i, i + BATCH_SIZE);
+        const results = await Promise.all(batch.map(seq => fetchOneStat(seq)));
 
-        const seq = needStats[i];
-        try {
-            const stats = await apiCall('POST', '/v1/analytics/stats', { sequenceId: seq.id }, 2);
-            const prospects = stats.payload?.prospects?.[0];
-            statsCache[seq.id] = {
-                notContacted: prospects ? (Number(prospects.notContacted) || 0) : 0,
-                total: prospects ? (Number(prospects.total) || 0) : 0,
-                contacted: prospects ? (Number(prospects.contacted) || 0) : 0,
-                fetchedAt: now,
-            };
-            statsFetched++;
-        } catch (err) {
-            if (err.isRateLimit) {
-                statsRateLimited = true;
-                break;
+        for (const r of results) {
+            if (r.ok) {
+                statsCache[r.id] = {
+                    notContacted: r.notContacted,
+                    total: r.total,
+                    contacted: r.contacted,
+                    fetchedAt: now,
+                };
+                fetched++;
+            } else if (r.isRateLimit) {
+                rateLimited = true;
+            } else {
+                // Failed but not rate limited — cache as 0 so we skip next time
+                statsCache[r.id] = { notContacted: 0, total: 0, contacted: 0, fetchedAt: now };
             }
-            // Mark as fetched with 0 so we don't keep retrying broken sequences
-            statsCache[seq.id] = { notContacted: 0, total: 0, contacted: 0, fetchedAt: now };
         }
 
-        // Delay between calls to avoid rate limit
-        if (i < needStats.length - 1 && !statsRateLimited) {
-            await sleep(1200);
+        // Small delay between batches to be nice to the API
+        if (i + BATCH_SIZE < needStats.length && !rateLimited) {
+            await sleep(300);
         }
     }
 
-    return { statsFetched, statsRateLimited, alreadyCached, totalNeeded: needStats.length };
+    return {
+        statsFetched: fetched,
+        statsRateLimited: rateLimited,
+        alreadyCached: activeSequences.length - needStats.length,
+        totalNeeded: needStats.length,
+    };
 }
 
-// ── Build final results from stats cache ──────────────────────────────────
+// ── Build results from cache ──────────────────────────────────────────────
 
 function buildResults(activeSequences) {
-    const results = [];
+    const sequences = [];
     let pendingCount = 0;
 
     for (const seq of activeSequences) {
         const stats = statsCache[seq.id];
-        if (!stats) {
-            pendingCount++;
-            continue;
-        }
+        if (!stats) { pendingCount++; continue; }
         if (stats.notContacted > 0) {
-            results.push({
+            sequences.push({
                 id: seq.id,
                 name: seq.name,
                 notContactedCount: stats.notContacted,
@@ -221,7 +207,7 @@ function buildResults(activeSequences) {
         }
     }
 
-    return { sequences: results, pendingCount };
+    return { sequences, pendingCount };
 }
 
 // ── Main orchestrator ─────────────────────────────────────────────────────
@@ -231,7 +217,6 @@ async function fetchSequencesWithStats() {
     const elapsed = () => Date.now() - startTime;
     const now = Date.now();
 
-    // Step 1: Get active sequences (use cached list if fresh)
     let activeSequences;
     let totalInApi = 0;
     let pagesFetched = 0;
@@ -251,10 +236,7 @@ async function fetchSequencesWithStats() {
         }
     }
 
-    // Step 2: Fetch stats progressively (picks up where last request left off)
-    const statsResult = await fetchStatsProgressive(activeSequences, startTime);
-
-    // Step 3: Build results
+    const statsResult = await fetchStatsParallel(activeSequences, startTime);
     const { sequences, pendingCount } = buildResults(activeSequences);
 
     return {
@@ -301,24 +283,19 @@ module.exports = async function handler(req, res) {
                         statsCacheEntries: Object.keys(statsCache).length,
                         lastResponseAge: lastResponseAt ? Math.round((Date.now() - lastResponseAt) / 1000) + 's' : 'none',
                     },
-                    sampleActiveSequences: cachedSeqList.slice(0, 10),
-                    statsCacheSample: Object.fromEntries(
-                        Object.entries(statsCache).slice(0, 5).map(([k, v]) => [k, { ...v, age: Math.round((Date.now() - v.fetchedAt) / 1000) + 's' }])
-                    ),
                 });
             } catch (e) {
                 return res.status(200).json({ _debug: true, error: e.message });
             }
         }
 
-        // Check short response cache (1 min) — prevents hammering on rapid reloads
+        // Short response cache — prevents hammering on rapid reload
         const fresh = req.query.fresh === '1';
         if (!fresh && lastResponse && (Date.now() - lastResponseAt < RESPONSE_CACHE_TTL)) {
             res.setHeader('X-Cache', 'HIT');
             return res.status(200).json(lastResponse);
         }
 
-        // Fetch data (progressive — accumulates stats across warm requests)
         const result = await fetchSequencesWithStats();
 
         const response = {
@@ -345,7 +322,6 @@ module.exports = async function handler(req, res) {
         res.setHeader('X-Cache', 'MISS');
         res.status(200).json(response);
     } catch (err) {
-        // If we have any cached data, serve it
         if (lastResponse) {
             res.setHeader('X-Cache', 'STALE');
             return res.status(200).json({
