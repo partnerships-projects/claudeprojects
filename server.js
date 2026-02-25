@@ -18,8 +18,9 @@ const { URL } = require('url');
 
 const PORT = process.env.PORT || 8080;
 const SALESHANDY_BASE = 'https://leo-open-api-gateway.saleshandy.com';
-const API_KEY = process.env.SALESHANDY_API_KEY || '';
+const API_KEY = (process.env.SALESHANDY_API_KEY || '').trim();
 const THRESHOLD = Number(process.env.THRESHOLD) || 2000;
+console.log(`  [DEBUG] API key loaded: "${API_KEY}" (length: ${API_KEY.length})`);
 
 // ── Proxy helper ─────────────────────────────────────────────────────────────
 
