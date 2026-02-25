@@ -254,7 +254,17 @@ async function fetchData(forceRefresh) {
             : 'Last updated: ' + now;
         document.getElementById('last-updated').textContent = updatedText;
         if (!data.warning) {
-            setStatus('success', 'Loaded ' + data.sequences.length + ' active sequences.');
+            const meta = data._meta || {};
+            let msg = 'Loaded ' + data.sequences.length + ' sequences with uncontacted prospects.';
+            if (meta.pendingStats > 0) {
+                msg += ' (' + meta.pendingStats + ' sequences still loading stats — refresh again shortly)';
+                setStatus('info', msg);
+            } else if (meta.statsRateLimited) {
+                msg += ' (Rate limited — some stats may be incomplete. Will retry on next refresh)';
+                setStatus('info', msg);
+            } else {
+                setStatus('success', msg);
+            }
         }
     } catch (err) {
         setStatus('error', 'Error: ' + err.message);
