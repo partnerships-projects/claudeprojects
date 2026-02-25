@@ -107,13 +107,14 @@ async function fetchActiveSequenceList(startTime) {
     const elapsed = () => Date.now() - startTime;
     const allSequences = [];
     let page = 1;
+    let rateLimited = false;
 
     while (elapsed() < 25000) {
         let data;
         try {
             data = await apiCall('GET', `/v1/sequences?page=${page}`, null, 2);
         } catch (err) {
-            if (err.isRateLimit) break;
+            if (err.isRateLimit) { rateLimited = true; break; }
             throw err;
         }
 
@@ -125,7 +126,7 @@ async function fetchActiveSequenceList(startTime) {
         await sleep(1500);
     }
 
-    // Filter to active sequences only (active=true, progress=1)
+    // Filter to active sequences only (active=true)
     const active = allSequences.filter(s => s.active === true);
     return {
         active: active.map(s => ({
@@ -135,6 +136,7 @@ async function fetchActiveSequenceList(startTime) {
         })),
         totalInApi: allSequences.length,
         pagesFetched: page,
+        listRateLimited: rateLimited,
     };
 }
 
@@ -292,15 +294,28 @@ async function fetchStatsProgressive(activeSequences, startTime) {
 // ── Build final results from cache ────────────────────────────────────────
 
 function buildResults(activeSequences) {
-    const results = [];
+    const withStats = [];
+    const pending = [];
 
     for (const seq of activeSequences) {
         const stats = statsCache[seq.id];
-        if (!stats) continue; // no stats yet — skip for now
+        if (!stats) {
+            // No stats yet — include as pending
+            pending.push({
+                id: seq.id,
+                name: seq.name,
+                notContactedCount: null,
+                totalProspects: null,
+                contacted: null,
+                client: seq.client,
+                statsPending: true,
+            });
+            continue;
+        }
 
-        // Only include sequences with notContacted > 0
+        // Only include sequences with notContacted > 0 (filters ghost/deleted)
         if (stats.notContacted > 0) {
-            results.push({
+            withStats.push({
                 id: seq.id,
                 name: seq.name,
                 notContactedCount: stats.notContacted,
@@ -311,7 +326,7 @@ function buildResults(activeSequences) {
         }
     }
 
-    return results;
+    return { withStats, pending };
 }
 
 // ── Main fetch orchestrator ───────────────────────────────────────────────
@@ -326,6 +341,8 @@ async function fetchSequencesWithStats() {
     let totalInApi = 0;
     let pagesFetched = 0;
 
+    let listRateLimited = false;
+
     if (cachedSeqList.length > 0 && seqListFetchedAt && (now - seqListFetchedAt < SEQ_LIST_TTL)) {
         activeSequences = cachedSeqList;
         totalInApi = cachedSeqList.length; // approximate
@@ -334,29 +351,31 @@ async function fetchSequencesWithStats() {
         activeSequences = listResult.active;
         totalInApi = listResult.totalInApi;
         pagesFetched = listResult.pagesFetched;
-        cachedSeqList = activeSequences;
-        seqListFetchedAt = now;
+        listRateLimited = listResult.listRateLimited;
+        // Only cache if we got some data
+        if (activeSequences.length > 0) {
+            cachedSeqList = activeSequences;
+            seqListFetchedAt = now;
+        }
     }
 
     // Step 2: Fetch stats progressively
     const statsResult = await fetchStatsProgressive(activeSequences, startTime);
 
     // Step 3: Build results from whatever stats we have
-    const sequences = buildResults(activeSequences);
-
-    // Count how many active sequences have stats cached
-    const withStats = activeSequences.filter(s => statsCache[s.id]).length;
-    const withoutStats = activeSequences.length - withStats;
+    const { withStats: sequences, pending } = buildResults(activeSequences);
 
     return {
         sequences,
+        pendingSequences: pending,
         activeSequences: activeSequences.length,
         totalInApi,
         pagesFetched,
+        listRateLimited,
         statsFetched: statsResult.statsFetched,
         statsFromCache: statsResult.statsSkipped,
         statsRateLimited: statsResult.statsRateLimited,
-        pendingStats: withoutStats,
+        pendingStats: pending.length,
         elapsedMs: elapsed(),
     };
 }
@@ -432,13 +451,16 @@ module.exports = async function handler(req, res) {
         }
 
         const result = await fetchSequencesWithStats();
-        cachedSequences = result.sequences;
+
+        // Combine: sequences with stats + pending sequences (without stats yet)
+        const allSequences = [...result.sequences, ...result.pendingSequences];
+        cachedSequences = allSequences;
         cacheTime = Date.now();
 
         res.setHeader('Cache-Control', 's-maxage=3600, stale-while-revalidate=1800');
         res.setHeader('X-Cache', 'MISS');
         res.status(200).json({
-            sequences: result.sequences,
+            sequences: allSequences,
             threshold: THRESHOLD,
             lastUpdated: new Date(cacheTime).toISOString(),
             _meta: {
@@ -446,7 +468,8 @@ module.exports = async function handler(req, res) {
                 totalInApi: result.totalInApi,
                 statsFetched: result.statsFetched,
                 statsFromCache: result.statsFromCache,
-                resultsShown: result.sequences.length,
+                withStats: result.sequences.length,
+                listRateLimited: result.listRateLimited,
                 statsRateLimited: result.statsRateLimited,
                 pendingStats: result.pendingStats,
                 pagesFetched: result.pagesFetched,

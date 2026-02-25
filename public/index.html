@@ -238,12 +238,19 @@ async function fetchData(forceRefresh) {
             THRESHOLD = data.threshold;
         }
 
-        if (data.warning) {
-            setStatus('info', data.warning);
-        }
         if (data.error) throw new Error(data.error);
+
+        const meta = data._meta || {};
         if (!data.sequences || data.sequences.length === 0) {
-            setStatus('error', 'No active sequences found.');
+            let errMsg = 'No active sequences found.';
+            if (meta.activeSequences === 0 && meta.totalInApi > 0) {
+                errMsg = 'Found ' + meta.totalInApi + ' sequences in API but none are active (active=true).';
+            } else if (meta.statsRateLimited) {
+                errMsg = 'Rate limited by SalesHandy API. Please wait a few minutes and refresh.';
+            } else if (meta.pagesFetched === 0) {
+                errMsg = 'Could not fetch sequence list from SalesHandy (rate limited or API error). Try again shortly.';
+            }
+            setStatus('error', errMsg);
             return;
         }
 
@@ -253,16 +260,23 @@ async function fetchData(forceRefresh) {
             ? 'Data from: ' + new Date(data.lastUpdated).toLocaleString() + ' — Page loaded: ' + now
             : 'Last updated: ' + now;
         document.getElementById('last-updated').textContent = updatedText;
-        if (!data.warning) {
-            const meta = data._meta || {};
-            let msg = 'Loaded ' + data.sequences.length + ' sequences with uncontacted prospects.';
-            if (meta.pendingStats > 0) {
-                msg += ' (' + meta.pendingStats + ' sequences still loading stats — refresh again shortly)';
+        if (data.warning) {
+            setStatus('info', data.warning);
+        } else {
+            const withStats = data.sequences.filter(function(s) { return s.notContactedCount !== null; }).length;
+            const pending = data.sequences.filter(function(s) { return s.notContactedCount === null; }).length;
+            let msg = '';
+            if (withStats > 0 && pending > 0) {
+                msg = 'Loaded ' + withStats + ' sequences with stats. ' + pending + ' still loading — refresh again shortly.';
+                setStatus('info', msg);
+            } else if (withStats === 0 && pending > 0) {
+                msg = 'Found ' + pending + ' active sequences. Stats are loading — refresh again in ~30 seconds.';
                 setStatus('info', msg);
             } else if (meta.statsRateLimited) {
-                msg += ' (Rate limited — some stats may be incomplete. Will retry on next refresh)';
+                msg = 'Loaded ' + withStats + ' sequences. Rate limited — some stats may be incomplete.';
                 setStatus('info', msg);
             } else {
+                msg = 'Loaded ' + withStats + ' sequences with uncontacted prospects.';
                 setStatus('success', msg);
             }
         }
@@ -278,11 +292,18 @@ function renderResults(sequences) {
     const results = document.getElementById('results');
     results.classList.remove('hidden');
 
-    sequences.sort((a, b) => (b.notContactedCount ?? -1) - (a.notContactedCount ?? -1));
+    // Split into sequences with stats and pending
+    const withStats = sequences.filter(function(d) { return d.notContactedCount !== null; });
+    const pending = sequences.filter(function(d) { return d.notContactedCount === null; });
 
-    const totalNotContacted = sequences.reduce((s, d) => s + (d.notContactedCount ?? 0), 0);
-    const below = sequences.filter(d => d.notContactedCount !== null && d.notContactedCount < THRESHOLD);
-    const above = sequences.filter(d => d.notContactedCount !== null && d.notContactedCount >= THRESHOLD);
+    // Sort: by count descending, pending at the bottom
+    withStats.sort(function(a, b) { return (b.notContactedCount ?? 0) - (a.notContactedCount ?? 0); });
+    pending.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
+    var sorted = withStats.concat(pending);
+
+    var totalNotContacted = withStats.reduce(function(s, d) { return s + (d.notContactedCount ?? 0); }, 0);
+    var below = withStats.filter(function(d) { return d.notContactedCount < THRESHOLD; });
+    var above = withStats.filter(function(d) { return d.notContactedCount >= THRESHOLD; });
 
     // Update threshold labels dynamically
     document.getElementById('label-below').textContent = 'Below ' + fmtNum(THRESHOLD);
@@ -294,27 +315,30 @@ function renderResults(sequences) {
     document.getElementById('s-below').textContent = fmtNum(below.length);
     document.getElementById('s-above').textContent = fmtNum(above.length);
 
-    document.getElementById('tbody-all').innerHTML = sequences.map((d, i) => {
-        const isRed = d.notContactedCount !== null && d.notContactedCount < THRESHOLD;
-        return '<tr class="' + (isRed ? 'row-red' : '') + '">'
+    document.getElementById('tbody-all').innerHTML = sorted.map(function(d, i) {
+        var isPending = d.notContactedCount === null;
+        var isRed = !isPending && d.notContactedCount < THRESHOLD;
+        var cls = isRed ? 'row-red' : '';
+        var countDisplay = isPending ? '<span style="color:var(--text-muted);font-weight:400;">loading...</span>' : fmtNum(d.notContactedCount);
+        return '<tr class="' + cls + '">'
             + '<td class="num">' + (i + 1) + '</td>'
-            + '<td class="seq-name">' + escapeHtml(d.name) + '</td>'
-            + '<td class="num">' + fmtNum(d.notContactedCount) + '</td>'
+            + '<td class="seq-name">' + escapeHtml(d.name) + (isPending ? ' <span style="color:var(--text-muted);font-size:11px;">(stats pending)</span>' : '') + '</td>'
+            + '<td class="num">' + countDisplay + '</td>'
             + '</tr>';
     }).join('');
 
-    const cardFlagged = document.getElementById('card-flagged');
+    var cardFlagged = document.getElementById('card-flagged');
     if (below.length === 0) {
         cardFlagged.classList.add('hidden');
     } else {
         cardFlagged.classList.remove('hidden');
         document.getElementById('tbody-flagged').innerHTML = below
-            .sort((a, b) => (a.notContactedCount ?? 0) - (b.notContactedCount ?? 0))
-            .map((d, i) => '<tr class="row-red">'
+            .sort(function(a, b) { return (a.notContactedCount ?? 0) - (b.notContactedCount ?? 0); })
+            .map(function(d, i) { return '<tr class="row-red">'
                 + '<td class="num">' + (i + 1) + '</td>'
                 + '<td class="seq-name">' + escapeHtml(d.name) + '</td>'
                 + '<td class="num">' + fmtNum(d.notContactedCount) + '</td>'
-                + '</tr>').join('');
+                + '</tr>'; }).join('');
     }
 }
 
