@@ -91,10 +91,13 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 async function fetchAllSequences() {
     const allSequences = [];
     let page = 1;
-    const PAGE_SIZE = 100; // request more items per page to reduce total API calls
+    const PAGE_SIZE = 100;
 
     while (true) {
-        const data = await apiGet(`/v1/sequences?page=${page}&limit=${PAGE_SIZE}&per_page=${PAGE_SIZE}&pageSize=${PAGE_SIZE}`);
+        // Filter for active sequences at the API level to avoid fetching all 1000+
+        const data = await apiGet(
+            `/v1/sequences?page=${page}&limit=${PAGE_SIZE}&per_page=${PAGE_SIZE}&pageSize=${PAGE_SIZE}&status=active&type=active&filter=active`
+        );
 
         let items = null;
         for (const key of ['payload', 'data', 'sequences', 'items', 'results', 'list']) {
@@ -187,7 +190,7 @@ module.exports = async function handler(req, res) {
                     return res.status(200).json({ _debug: true, endpoint: probe, error: e.message });
                 }
             }
-            const listRaw = await apiGet('/v1/sequences?page=1', 1);
+            const listRaw = await apiGet('/v1/sequences?page=1&limit=100&status=active&type=active&filter=active', 1);
             return res.status(200).json({ _debug: true, raw: listRaw });
         }
 
