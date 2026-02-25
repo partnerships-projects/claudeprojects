@@ -84,6 +84,49 @@ async function apiGet(urlPath, retries = 3) {
     throw lastErr;
 }
 
+function httpsPost(urlPath, body) {
+    return new Promise((resolve, reject) => {
+        const url = new URL(urlPath, SALESHANDY_BASE);
+        const postData = JSON.stringify(body);
+        const options = {
+            hostname: url.hostname,
+            port: 443,
+            path: url.pathname + url.search,
+            method: 'POST',
+            headers: {
+                'x-api-key': API_KEY,
+                'Authorization': `Bearer ${API_KEY}`,
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(postData),
+            },
+        };
+
+        const req = https.request(options, (res) => {
+            let responseBody = '';
+            res.on('data', (chunk) => responseBody += chunk);
+            res.on('end', () => {
+                if (res.statusCode === 429) {
+                    reject(Object.assign(new Error('RATE_LIMITED'), { isRateLimit: true }));
+                    return;
+                }
+                if (res.statusCode >= 400) {
+                    let detail = responseBody;
+                    try { detail = JSON.stringify(JSON.parse(responseBody), null, 2); } catch (_) {}
+                    reject(new Error(`POST ${res.statusCode} on ${urlPath}\n${detail}`));
+                    return;
+                }
+                try { resolve(JSON.parse(responseBody)); }
+                catch (e) { reject(new Error(`Invalid JSON from POST ${urlPath}: ${responseBody.slice(0, 200)}`)); }
+            });
+        });
+
+        req.on('error', (err) => reject(new Error(`Network error on POST ${urlPath}: ${err.message}`)));
+        req.setTimeout(15000, () => { req.destroy(); reject(new Error(`Timeout on POST ${urlPath}`)); });
+        req.write(postData);
+        req.end();
+    });
+}
+
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 // ── Sequence fetching (list only — no per-sequence detail calls) ─────────────
@@ -225,64 +268,36 @@ module.exports = async function handler(req, res) {
                     listInfo = { totalOnPage1: items.length, activeOnPage1: items.filter(s => s.active === true).length };
                 }
 
-                // Round 3: try alternate host + /api/v1/ prefix + sequence stats
-                const ALT_HOST = 'https://open-api.saleshandy.com';
-
-                // Probe on the alternate host (open-api.saleshandy.com)
-                const altProbes = [
-                    `${ALT_HOST}/api-doc/swagger-spec.json`,
-                    `${ALT_HOST}/api-doc-json`,
-                    `${ALT_HOST}/v1/sequences?page=1`,
-                    `${ALT_HOST}/v1/sequence-statistics?page=1`,
-                    `${ALT_HOST}/api/v1/sequences?page=1`,
-                    `${ALT_HOST}/api/v1/sequence-statistics?page=1`,
-                    `${ALT_HOST}/api/v1/sequence-statistics`,
+                // Probe POST /v1/analytics/stats with various body formats
+                const postProbes = [
+                    { path: '/v1/analytics/stats', body: { sequenceId: sampleId } },
+                    { path: '/v1/analytics/stats', body: { sequence_id: sampleId } },
+                    { path: '/v1/analytics/stats', body: { id: sampleId } },
+                    { path: '/v1/analytics/stats', body: { sequenceIds: [sampleId] } },
+                    { path: '/v1/analytics/stats', body: {} },
+                    { path: '/v1/analytics/consolidated-stats', body: { sequenceIds: [sampleId] } },
+                    { path: '/v1/analytics/consolidated-stats', body: { sequenceId: sampleId } },
+                    { path: '/v1/analytics/consolidated-stats', body: {} },
                 ];
 
-                // Also try /api/v1/ prefix on the current host
-                const mainProbes = sampleId ? [
-                    `/api/v1/sequences?page=1`,
-                    `/api/v1/sequence-statistics`,
-                    `/api/v1/sequence-statistics?page=1`,
-                    `/api/v1/sequences/${sampleId}/statistics`,
-                    `/api/v1/sequences/statistics?page=1`,
-                ] : [];
-
-                const probeEndpoints = [...mainProbes];
-
                 const probeResults = {};
-                // Probe main host endpoints
-                for (const ep of probeEndpoints) {
+                for (const { path, body } of postProbes) {
+                    const key = `POST ${path} ${JSON.stringify(body)}`;
                     try {
-                        const data = await httpsGet(ep);
-                        probeResults[ep] = { status: 'OK', keys: Object.keys(data), data };
+                        const data = await httpsPost(path, body);
+                        probeResults[key] = { status: 'OK', data };
                     } catch (e) {
-                        const msg = e.message.slice(0, 300);
-                        probeResults[ep] = { status: e.isRateLimit ? 'RATE_LIMITED' : 'ERROR', message: msg };
+                        const msg = e.message.slice(0, 500);
+                        probeResults[key] = { status: e.isRateLimit ? 'RATE_LIMITED' : 'ERROR', message: msg };
                         if (e.isRateLimit) await sleep(3000);
                     }
-                    await sleep(1000);
-                }
-
-                // Probe alternate host (open-api.saleshandy.com)
-                for (const ep of altProbes) {
-                    try {
-                        const data = await httpsGet(ep);
-                        probeResults[ep] = { status: 'OK', keys: Object.keys(data), data: typeof data === 'object' ? (Array.isArray(data) ? `[array:${data.length}]` : Object.keys(data)) : data };
-                    } catch (e) {
-                        const msg = e.message.slice(0, 300);
-                        probeResults[ep] = { status: e.isRateLimit ? 'RATE_LIMITED' : 'ERROR', message: msg };
-                        if (e.isRateLimit) await sleep(3000);
-                    }
-                    await sleep(1000);
+                    await sleep(1500);
                 }
 
                 return res.status(200).json({
                     _debug: true,
-                    _help: 'Use ?debug=1&id=XXXX to skip list fetch. Probing endpoints for stats.',
+                    _help: 'Probing POST /v1/analytics/stats with various body formats',
                     sampleSequenceId: sampleId,
-                    sampleSequenceTitle: sampleTitle,
-                    listInfo,
                     probeResults,
                 });
             } catch (debugErr) {
