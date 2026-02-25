@@ -9,11 +9,10 @@
 // Returns JSON: { sequences, threshold, lastUpdated }
 //
 // Strategy:
-//   1. Fetch all sequences, filter to active=true (~134 out of ~1100)
-//   2. Try POST /v1/analytics/consolidated-stats for batch stats
-//   3. Fall back to individual POST /v1/analytics/stats calls
-//   4. Progressive caching: fetch what we can in 45s, cache it,
-//      continue fetching remaining stats on next request
+//   1. Fetch all sequences, filter to active=true (~66 real + some ghost)
+//   2. Fetch stats individually via POST /v1/analytics/stats
+//   3. Progressive: each request fetches more stats, cache persists in memory
+//   4. Only show sequences where notContacted > 0 (filters out ghost sequences)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const https = require('https');
@@ -23,16 +22,22 @@ const API_KEY = process.env.SALESHANDY_API_KEY || '';
 const THRESHOLD = Number(process.env.THRESHOLD) || 2000;
 
 // ── In-memory progressive cache ───────────────────────────────────────────
+// These persist across requests on the SAME warm Vercel instance.
 
-let cachedSequences = [];      // final results with stats
-let cachedSeqList = [];        // raw active sequences from API (id, title, client)
-let statsCache = {};           // { sequenceId: { notContacted, total, contacted, fetchedAt } }
-let cacheTime = null;
-const CACHE_TTL = 3 * 60 * 60 * 1000;    // 3 hours for full cache
-const STATS_TTL = 2 * 60 * 60 * 1000;    // 2 hours for individual stats
-const SEQ_LIST_TTL = 30 * 60 * 1000;     // 30 min for sequence list
+let cachedSeqList = [];        // active sequences from API [{id, name, client}]
+let seqListFetchedAt = 0;
 
-let seqListFetchedAt = null;
+// Stats cache: { sequenceId: { notContacted, total, contacted, fetchedAt } }
+// Ghost sequences get cached with notContacted=0, so we won't re-fetch them
+let statsCache = {};
+
+// Final response cache (short TTL — just to avoid hammering on rapid reloads)
+let lastResponse = null;
+let lastResponseAt = 0;
+const RESPONSE_CACHE_TTL = 60 * 1000; // 1 minute
+
+const SEQ_LIST_TTL = 15 * 60 * 1000;  // 15 min for sequence list
+const STATS_TTL = 60 * 60 * 1000;     // 1 hour for individual stats
 
 // ── HTTP helpers ────────────────────────────────────────────────────────────
 
@@ -123,10 +128,9 @@ async function fetchActiveSequenceList(startTime) {
         allSequences.push(...items);
         if (items.length < 100) break;
         page++;
-        await sleep(1500);
+        await sleep(1200);
     }
 
-    // Filter to active sequences only (active=true)
     const active = allSequences.filter(s => s.active === true);
     return {
         active: active.map(s => ({
@@ -140,40 +144,13 @@ async function fetchActiveSequenceList(startTime) {
     };
 }
 
-// ── Try consolidated-stats batch endpoint ─────────────────────────────────
-
-async function tryConsolidatedStats(sequenceIds) {
-    // Try different body formats — we don't know the exact format yet
-    const formats = [
-        { sequenceIds },
-        { ids: sequenceIds },
-        { sequences: sequenceIds },
-    ];
-
-    for (const body of formats) {
-        try {
-            const data = await httpsRequest('POST', '/v1/analytics/consolidated-stats', body);
-            // If we get here, it worked! Parse the response
-            if (data.payload) {
-                return { success: true, data, bodyFormat: body };
-            }
-        } catch (err) {
-            if (err.isRateLimit) throw err;
-            // Try next format
-        }
-        await sleep(500);
-    }
-
-    return { success: false };
-}
-
-// ── Fetch stats for sequences (progressive) ──────────────────────────────
+// ── Fetch stats progressively ─────────────────────────────────────────────
 
 async function fetchStatsProgressive(activeSequences, startTime) {
     const elapsed = () => Date.now() - startTime;
     const now = Date.now();
 
-    // Determine which sequences need fresh stats
+    // Which sequences need stats? (not cached or stale)
     const needStats = activeSequences.filter(s => {
         const cached = statsCache[s.id];
         if (!cached) return true;
@@ -181,141 +158,59 @@ async function fetchStatsProgressive(activeSequences, startTime) {
         return false;
     });
 
-    // Sort: sequences without any cached stats first
-    needStats.sort((a, b) => {
-        const aHas = statsCache[a.id] ? 1 : 0;
-        const bHas = statsCache[b.id] ? 1 : 0;
-        return aHas - bHas;
-    });
-
     let statsFetched = 0;
     let statsRateLimited = false;
-    let statsSkipped = activeSequences.length - needStats.length;
+    const alreadyCached = activeSequences.length - needStats.length;
 
-    // Try consolidated-stats first (only if we have many to fetch)
-    if (needStats.length > 5 && elapsed() < 30000) {
+    // Fetch stats one at a time with minimal delay
+    const TIME_LIMIT = 50000; // leave 10s buffer for Vercel's 60s limit
+
+    for (let i = 0; i < needStats.length; i++) {
+        if (elapsed() > TIME_LIMIT || statsRateLimited) break;
+
+        const seq = needStats[i];
         try {
-            const batchIds = needStats.slice(0, 50).map(s => s.id);
-            const result = await tryConsolidatedStats(batchIds);
-            if (result.success && result.data.payload) {
-                // Parse batch response — try common structures
-                const payload = result.data.payload;
-                let parsed = 0;
-
-                // If payload is an array of stats
-                if (Array.isArray(payload)) {
-                    for (const item of payload) {
-                        const seqId = item.sequenceId || item.id;
-                        const prospects = item.prospects?.[0] || item;
-                        if (seqId) {
-                            statsCache[seqId] = {
-                                notContacted: Number(prospects.notContacted) || 0,
-                                total: Number(prospects.total) || 0,
-                                contacted: Number(prospects.contacted) || 0,
-                                fetchedAt: now,
-                            };
-                            parsed++;
-                        }
-                    }
-                }
-                // If payload is an object with sequence IDs as keys
-                else if (typeof payload === 'object') {
-                    for (const [key, val] of Object.entries(payload)) {
-                        if (val && typeof val === 'object') {
-                            const prospects = val.prospects?.[0] || val;
-                            statsCache[key] = {
-                                notContacted: Number(prospects.notContacted) || 0,
-                                total: Number(prospects.total) || 0,
-                                contacted: Number(prospects.contacted) || 0,
-                                fetchedAt: now,
-                            };
-                            parsed++;
-                        }
-                    }
-                }
-
-                if (parsed > 0) {
-                    statsFetched += parsed;
-                    // Remove successfully fetched from needStats
-                    const fetched = new Set(Object.keys(statsCache).filter(id =>
-                        statsCache[id].fetchedAt === now
-                    ));
-                    const remaining = needStats.filter(s => !fetched.has(s.id));
-                    needStats.length = 0;
-                    needStats.push(...remaining);
-                }
-            }
+            const stats = await apiCall('POST', '/v1/analytics/stats', { sequenceId: seq.id }, 2);
+            const prospects = stats.payload?.prospects?.[0];
+            statsCache[seq.id] = {
+                notContacted: prospects ? (Number(prospects.notContacted) || 0) : 0,
+                total: prospects ? (Number(prospects.total) || 0) : 0,
+                contacted: prospects ? (Number(prospects.contacted) || 0) : 0,
+                fetchedAt: now,
+            };
+            statsFetched++;
         } catch (err) {
             if (err.isRateLimit) {
                 statsRateLimited = true;
+                break;
             }
-            // Consolidated stats didn't work, fall back to individual
+            // Mark as fetched with 0 so we don't keep retrying broken sequences
+            statsCache[seq.id] = { notContacted: 0, total: 0, contacted: 0, fetchedAt: now };
+        }
+
+        // Delay between calls to avoid rate limit
+        if (i < needStats.length - 1 && !statsRateLimited) {
+            await sleep(1200);
         }
     }
 
-    // Fall back to individual stats calls for remaining sequences
-    // Use concurrent fetching: 2 at a time with staggered delays
-    const CONCURRENT = 2;
-    const DELAY_BETWEEN_BATCHES = 1800; // ms between batch starts
-    const TIME_LIMIT = 50000; // leave 10s buffer for Vercel
-
-    for (let i = 0; i < needStats.length && !statsRateLimited; i += CONCURRENT) {
-        if (elapsed() > TIME_LIMIT) break;
-
-        const batch = needStats.slice(i, i + CONCURRENT);
-        const promises = batch.map(async (seq) => {
-            try {
-                const stats = await apiCall('POST', '/v1/analytics/stats', { sequenceId: seq.id }, 2);
-                const prospects = stats.payload?.prospects?.[0];
-                statsCache[seq.id] = {
-                    notContacted: prospects ? (Number(prospects.notContacted) || 0) : 0,
-                    total: prospects ? (Number(prospects.total) || 0) : 0,
-                    contacted: prospects ? (Number(prospects.contacted) || 0) : 0,
-                    fetchedAt: now,
-                };
-                statsFetched++;
-            } catch (err) {
-                if (err.isRateLimit) {
-                    statsRateLimited = true;
-                }
-                // Skip sequences that error (deleted, etc.)
-            }
-        });
-
-        await Promise.all(promises);
-        if (i + CONCURRENT < needStats.length && !statsRateLimited) {
-            await sleep(DELAY_BETWEEN_BATCHES);
-        }
-    }
-
-    return { statsFetched, statsRateLimited, statsSkipped };
+    return { statsFetched, statsRateLimited, alreadyCached, totalNeeded: needStats.length };
 }
 
-// ── Build final results from cache ────────────────────────────────────────
+// ── Build final results from stats cache ──────────────────────────────────
 
 function buildResults(activeSequences) {
-    const withStats = [];
-    const pending = [];
+    const results = [];
+    let pendingCount = 0;
 
     for (const seq of activeSequences) {
         const stats = statsCache[seq.id];
         if (!stats) {
-            // No stats yet — include as pending
-            pending.push({
-                id: seq.id,
-                name: seq.name,
-                notContactedCount: null,
-                totalProspects: null,
-                contacted: null,
-                client: seq.client,
-                statsPending: true,
-            });
+            pendingCount++;
             continue;
         }
-
-        // Only include sequences with notContacted > 0 (filters ghost/deleted)
         if (stats.notContacted > 0) {
-            withStats.push({
+            results.push({
                 id: seq.id,
                 name: seq.name,
                 notContactedCount: stats.notContacted,
@@ -326,56 +221,52 @@ function buildResults(activeSequences) {
         }
     }
 
-    return { withStats, pending };
+    return { sequences: results, pendingCount };
 }
 
-// ── Main fetch orchestrator ───────────────────────────────────────────────
+// ── Main orchestrator ─────────────────────────────────────────────────────
 
 async function fetchSequencesWithStats() {
     const startTime = Date.now();
     const elapsed = () => Date.now() - startTime;
     const now = Date.now();
 
-    // Step 1: Get active sequences list (use cached list if fresh enough)
+    // Step 1: Get active sequences (use cached list if fresh)
     let activeSequences;
     let totalInApi = 0;
     let pagesFetched = 0;
-
     let listRateLimited = false;
 
-    if (cachedSeqList.length > 0 && seqListFetchedAt && (now - seqListFetchedAt < SEQ_LIST_TTL)) {
+    if (cachedSeqList.length > 0 && (now - seqListFetchedAt < SEQ_LIST_TTL)) {
         activeSequences = cachedSeqList;
-        totalInApi = cachedSeqList.length; // approximate
     } else {
         const listResult = await fetchActiveSequenceList(startTime);
         activeSequences = listResult.active;
         totalInApi = listResult.totalInApi;
         pagesFetched = listResult.pagesFetched;
         listRateLimited = listResult.listRateLimited;
-        // Only cache if we got some data
         if (activeSequences.length > 0) {
             cachedSeqList = activeSequences;
             seqListFetchedAt = now;
         }
     }
 
-    // Step 2: Fetch stats progressively
+    // Step 2: Fetch stats progressively (picks up where last request left off)
     const statsResult = await fetchStatsProgressive(activeSequences, startTime);
 
-    // Step 3: Build results from whatever stats we have
-    const { withStats: sequences, pending } = buildResults(activeSequences);
+    // Step 3: Build results
+    const { sequences, pendingCount } = buildResults(activeSequences);
 
     return {
         sequences,
-        pendingSequences: pending,
-        activeSequences: activeSequences.length,
+        activeInApi: activeSequences.length,
         totalInApi,
         pagesFetched,
         listRateLimited,
         statsFetched: statsResult.statsFetched,
-        statsFromCache: statsResult.statsSkipped,
+        alreadyCached: statsResult.alreadyCached,
         statsRateLimited: statsResult.statsRateLimited,
-        pendingStats: pending.length,
+        pendingStats: pendingCount,
         elapsedMs: elapsed(),
     };
 }
@@ -392,7 +283,7 @@ module.exports = async function handler(req, res) {
     }
 
     try {
-        // Debug: probe any endpoint
+        // Debug endpoint
         if (req.query.debug === '1') {
             try {
                 const probe = req.query.probe;
@@ -402,72 +293,43 @@ module.exports = async function handler(req, res) {
                     const data = await httpsRequest(method, probe, body);
                     return res.status(200).json({ _debug: true, endpoint: probe, raw: data });
                 }
-                // Default debug: probe consolidated-stats with sample IDs
-                const listData = await apiCall('GET', '/v1/sequences?page=1', null, 2);
-                const sampleIds = (listData.payload || []).filter(s => s.active).slice(0, 3).map(s => s.id);
-                const probeResults = {};
-                const bodies = [
-                    { sequenceIds: sampleIds },
-                    { ids: sampleIds },
-                    { sequences: sampleIds },
-                    { sequenceId: sampleIds[0] },
-                ];
-                for (const body of bodies) {
-                    const key = JSON.stringify(body);
-                    try {
-                        const data = await httpsRequest('POST', '/v1/analytics/consolidated-stats', body);
-                        probeResults[key] = { status: 'OK', data };
-                    } catch (e) {
-                        probeResults[key] = { status: 'ERROR', message: e.message.slice(0, 500) };
-                    }
-                    await sleep(1500);
-                }
                 return res.status(200).json({
                     _debug: true,
-                    sampleIds,
-                    consolidatedStatsProbe: probeResults,
                     cacheStatus: {
-                        cachedSequences: cachedSequences.length,
-                        cachedSeqList: cachedSeqList.length,
+                        cachedSeqListLength: cachedSeqList.length,
+                        seqListAge: seqListFetchedAt ? Math.round((Date.now() - seqListFetchedAt) / 1000) + 's' : 'none',
                         statsCacheEntries: Object.keys(statsCache).length,
+                        lastResponseAge: lastResponseAt ? Math.round((Date.now() - lastResponseAt) / 1000) + 's' : 'none',
                     },
+                    sampleActiveSequences: cachedSeqList.slice(0, 10),
+                    statsCacheSample: Object.fromEntries(
+                        Object.entries(statsCache).slice(0, 5).map(([k, v]) => [k, { ...v, age: Math.round((Date.now() - v.fetchedAt) / 1000) + 's' }])
+                    ),
                 });
             } catch (e) {
                 return res.status(200).json({ _debug: true, error: e.message });
             }
         }
 
-        // Normal mode — use full cache if available and fresh
+        // Check short response cache (1 min) — prevents hammering on rapid reloads
         const fresh = req.query.fresh === '1';
-
-        if (!fresh && cachedSequences.length > 0 && cacheTime && (Date.now() - cacheTime < CACHE_TTL)) {
-            res.setHeader('Cache-Control', 's-maxage=3600, stale-while-revalidate=1800');
+        if (!fresh && lastResponse && (Date.now() - lastResponseAt < RESPONSE_CACHE_TTL)) {
             res.setHeader('X-Cache', 'HIT');
-            return res.status(200).json({
-                sequences: cachedSequences,
-                threshold: THRESHOLD,
-                lastUpdated: new Date(cacheTime).toISOString(),
-            });
+            return res.status(200).json(lastResponse);
         }
 
+        // Fetch data (progressive — accumulates stats across warm requests)
         const result = await fetchSequencesWithStats();
 
-        // Combine: sequences with stats + pending sequences (without stats yet)
-        const allSequences = [...result.sequences, ...result.pendingSequences];
-        cachedSequences = allSequences;
-        cacheTime = Date.now();
-
-        res.setHeader('Cache-Control', 's-maxage=3600, stale-while-revalidate=1800');
-        res.setHeader('X-Cache', 'MISS');
-        res.status(200).json({
-            sequences: allSequences,
+        const response = {
+            sequences: result.sequences,
             threshold: THRESHOLD,
-            lastUpdated: new Date(cacheTime).toISOString(),
+            lastUpdated: new Date().toISOString(),
             _meta: {
-                activeSequences: result.activeSequences,
+                activeInApi: result.activeInApi,
                 totalInApi: result.totalInApi,
                 statsFetched: result.statsFetched,
-                statsFromCache: result.statsFromCache,
+                alreadyCached: result.alreadyCached,
                 withStats: result.sequences.length,
                 listRateLimited: result.listRateLimited,
                 statsRateLimited: result.statsRateLimited,
@@ -475,14 +337,19 @@ module.exports = async function handler(req, res) {
                 pagesFetched: result.pagesFetched,
                 elapsedMs: result.elapsedMs,
             },
-        });
+        };
+
+        lastResponse = response;
+        lastResponseAt = Date.now();
+
+        res.setHeader('X-Cache', 'MISS');
+        res.status(200).json(response);
     } catch (err) {
-        if (cachedSequences.length > 0) {
+        // If we have any cached data, serve it
+        if (lastResponse) {
             res.setHeader('X-Cache', 'STALE');
             return res.status(200).json({
-                sequences: cachedSequences,
-                threshold: THRESHOLD,
-                lastUpdated: cacheTime ? new Date(cacheTime).toISOString() : null,
+                ...lastResponse,
                 warning: 'Serving cached data — live fetch failed: ' + err.message,
             });
         }

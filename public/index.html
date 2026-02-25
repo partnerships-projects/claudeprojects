@@ -241,16 +241,25 @@ async function fetchData(forceRefresh) {
         if (data.error) throw new Error(data.error);
 
         const meta = data._meta || {};
-        if (!data.sequences || data.sequences.length === 0) {
+        const hasSequences = data.sequences && data.sequences.length > 0;
+        const hasPending = meta.pendingStats > 0;
+
+        if (!hasSequences && !hasPending) {
             let errMsg = 'No active sequences found.';
             if (meta.activeSequences === 0 && meta.totalInApi > 0) {
-                errMsg = 'Found ' + meta.totalInApi + ' sequences in API but none are active (active=true).';
-            } else if (meta.statsRateLimited) {
-                errMsg = 'Rate limited by SalesHandy API. Please wait a few minutes and refresh.';
-            } else if (meta.pagesFetched === 0) {
-                errMsg = 'Could not fetch sequence list from SalesHandy (rate limited or API error). Try again shortly.';
+                errMsg = 'Found ' + meta.totalInApi + ' sequences in API but none are active.';
+            } else if (meta.listRateLimited) {
+                errMsg = 'Rate limited by SalesHandy API. Auto-retrying in 30 seconds...';
+                setTimeout(function() { fetchData(true); }, 30000);
             }
             setStatus('error', errMsg);
+            return;
+        }
+
+        if (!hasSequences && hasPending) {
+            // Stats haven't loaded yet — show loading message, auto-retry
+            setStatus('info', 'Found ' + meta.activeSequences + ' active sequences. Loading stats... auto-refreshing in 30s.');
+            setTimeout(function() { fetchData(true); }, 30000);
             return;
         }
 
@@ -262,23 +271,14 @@ async function fetchData(forceRefresh) {
         document.getElementById('last-updated').textContent = updatedText;
         if (data.warning) {
             setStatus('info', data.warning);
+        } else if (hasPending) {
+            setStatus('info', 'Loaded ' + data.sequences.length + ' sequences. ' + meta.pendingStats + ' more loading stats — auto-refreshing in 30s...');
+            setTimeout(function() { fetchData(true); }, 30000);
+        } else if (meta.statsRateLimited) {
+            setStatus('info', 'Loaded ' + data.sequences.length + ' sequences. Rate limited — auto-retrying in 60s...');
+            setTimeout(function() { fetchData(true); }, 60000);
         } else {
-            const withStats = data.sequences.filter(function(s) { return s.notContactedCount !== null; }).length;
-            const pending = data.sequences.filter(function(s) { return s.notContactedCount === null; }).length;
-            let msg = '';
-            if (withStats > 0 && pending > 0) {
-                msg = 'Loaded ' + withStats + ' sequences with stats. ' + pending + ' still loading — refresh again shortly.';
-                setStatus('info', msg);
-            } else if (withStats === 0 && pending > 0) {
-                msg = 'Found ' + pending + ' active sequences. Stats are loading — refresh again in ~30 seconds.';
-                setStatus('info', msg);
-            } else if (meta.statsRateLimited) {
-                msg = 'Loaded ' + withStats + ' sequences. Rate limited — some stats may be incomplete.';
-                setStatus('info', msg);
-            } else {
-                msg = 'Loaded ' + withStats + ' sequences with uncontacted prospects.';
-                setStatus('success', msg);
-            }
+            setStatus('success', 'Loaded ' + data.sequences.length + ' sequences with uncontacted prospects.');
         }
     } catch (err) {
         setStatus('error', 'Error: ' + err.message);
@@ -292,20 +292,12 @@ function renderResults(sequences) {
     const results = document.getElementById('results');
     results.classList.remove('hidden');
 
-    // Split into sequences with stats and pending
-    const withStats = sequences.filter(function(d) { return d.notContactedCount !== null; });
-    const pending = sequences.filter(function(d) { return d.notContactedCount === null; });
+    sequences.sort(function(a, b) { return (b.notContactedCount ?? 0) - (a.notContactedCount ?? 0); });
 
-    // Sort: by count descending, pending at the bottom
-    withStats.sort(function(a, b) { return (b.notContactedCount ?? 0) - (a.notContactedCount ?? 0); });
-    pending.sort(function(a, b) { return (a.name || '').localeCompare(b.name || ''); });
-    var sorted = withStats.concat(pending);
+    var totalNotContacted = sequences.reduce(function(s, d) { return s + (d.notContactedCount ?? 0); }, 0);
+    var below = sequences.filter(function(d) { return d.notContactedCount !== null && d.notContactedCount < THRESHOLD; });
+    var above = sequences.filter(function(d) { return d.notContactedCount !== null && d.notContactedCount >= THRESHOLD; });
 
-    var totalNotContacted = withStats.reduce(function(s, d) { return s + (d.notContactedCount ?? 0); }, 0);
-    var below = withStats.filter(function(d) { return d.notContactedCount < THRESHOLD; });
-    var above = withStats.filter(function(d) { return d.notContactedCount >= THRESHOLD; });
-
-    // Update threshold labels dynamically
     document.getElementById('label-below').textContent = 'Below ' + fmtNum(THRESHOLD);
     document.getElementById('label-above').textContent = 'Above ' + fmtNum(THRESHOLD);
     document.getElementById('flagged-title').textContent = 'Sequences below ' + fmtNum(THRESHOLD) + ' — need more prospects';
@@ -315,15 +307,12 @@ function renderResults(sequences) {
     document.getElementById('s-below').textContent = fmtNum(below.length);
     document.getElementById('s-above').textContent = fmtNum(above.length);
 
-    document.getElementById('tbody-all').innerHTML = sorted.map(function(d, i) {
-        var isPending = d.notContactedCount === null;
-        var isRed = !isPending && d.notContactedCount < THRESHOLD;
-        var cls = isRed ? 'row-red' : '';
-        var countDisplay = isPending ? '<span style="color:var(--text-muted);font-weight:400;">loading...</span>' : fmtNum(d.notContactedCount);
-        return '<tr class="' + cls + '">'
+    document.getElementById('tbody-all').innerHTML = sequences.map(function(d, i) {
+        var isRed = d.notContactedCount !== null && d.notContactedCount < THRESHOLD;
+        return '<tr class="' + (isRed ? 'row-red' : '') + '">'
             + '<td class="num">' + (i + 1) + '</td>'
-            + '<td class="seq-name">' + escapeHtml(d.name) + (isPending ? ' <span style="color:var(--text-muted);font-size:11px;">(stats pending)</span>' : '') + '</td>'
-            + '<td class="num">' + countDisplay + '</td>'
+            + '<td class="seq-name">' + escapeHtml(d.name) + '</td>'
+            + '<td class="num">' + fmtNum(d.notContactedCount) + '</td>'
             + '</tr>';
     }).join('');
 
