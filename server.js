@@ -33,6 +33,7 @@ function proxySaleshandy(targetPath, res) {
         method: 'GET',
         headers: {
             'x-api-key': API_KEY,
+            'Authorization': `Bearer ${API_KEY}`,
             'Content-Type': 'application/json',
         },
     };
@@ -382,6 +383,7 @@ function saleshandyGetOnce(urlPath) {
             method: 'GET',
             headers: {
                 'x-api-key': API_KEY,
+                'Authorization': `Bearer ${API_KEY}`,
                 'Content-Type': 'application/json',
             },
         };
