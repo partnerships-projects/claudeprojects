@@ -468,14 +468,24 @@ async function fetchAllSequences() {
     }
 
     // Filter to only active sequences
+    // NOTE: Do NOT rely on seq.active boolean — SalesHandy API returns active:false
+    // even for running sequences in some response formats. Use status string instead.
     const active = allSequences.filter(seq => {
-        if (seq.active === true) return true;
-        if (seq.active === false) return false;
-        // Fallback for other API formats
         const status = (seq.status || seq.state || '').toString().toLowerCase();
-        const inactive = ['paused', 'stopped', 'archived', 'deleted', 'draft', 'disabled'];
-        return !inactive.includes(status);
+        const inactive = ['paused', 'stopped', 'archived', 'deleted', 'draft', 'disabled', 'completed', 'finished'];
+        const activeKeywords = ['active', 'running', 'live', 'in_progress', 'inprogress', 'started'];
+        // If status is explicitly inactive → exclude
+        if (inactive.includes(status)) return false;
+        // If status is explicitly active → include
+        if (activeKeywords.includes(status)) return true;
+        // If no recognizable status → include (don't silently drop sequences)
+        return true;
     });
+    if (allSequences.length > 0) {
+        const sample = allSequences[0];
+        console.log(`  [DEBUG] Sample sequence fields: ${Object.keys(sample).join(', ')}`);
+        console.log(`  [DEBUG] Sample status="${sample.status}" active=${sample.active} state="${sample.state}"`);
+    }
     console.log(`  [INFO] Found ${allSequences.length} total sequences, ${active.length} active.`);
 
     // Extract not-contacted counts with rate-limit-friendly delays
@@ -624,19 +634,24 @@ const server = http.createServer(async (req, res) => {
     // API: diagnostic — test the SalesHandy connection
     if (url.pathname === '/api/test') {
         const results = {};
-        const testEndpoints = [
-            '/v1/sequences?page=1',
-        ];
-        for (const ep of testEndpoints) {
-            try {
-                const data = await saleshandyGetOnce(ep);
-                results[ep] = { status: 'ok', keys: Object.keys(data), sample: JSON.stringify(data).slice(0, 500) };
-            } catch (err) {
-                results[ep] = { status: 'error', message: err.message };
-            }
+        try {
+            const data = await saleshandyGetOnce('/v1/sequences?page=1');
+            const items = data.payload || data.data || data.sequences || data.items || data.results
+                || (Array.isArray(data) ? data : []);
+            const sampleSeq = Array.isArray(items) && items.length > 0 ? items[0] : null;
+            results['/v1/sequences?page=1'] = {
+                status: 'ok',
+                topLevelKeys: Object.keys(data),
+                itemCount: Array.isArray(items) ? items.length : '(not array)',
+                sampleSequenceKeys: sampleSeq ? Object.keys(sampleSeq) : null,
+                sampleSequence: sampleSeq ? JSON.stringify(sampleSeq).slice(0, 800) : null,
+                raw: JSON.stringify(data).slice(0, 1000),
+            };
+        } catch (err) {
+            results['/v1/sequences?page=1'] = { status: 'error', message: err.message };
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ apiKey: API_KEY.slice(0, 6) + '...' + API_KEY.slice(-4), results }, null, 2));
+        res.end(JSON.stringify({ apiKey: API_KEY ? API_KEY.slice(0, 6) + '...' + API_KEY.slice(-4) : '(not set)', results }, null, 2));
         return;
     }
 
