@@ -91,13 +91,25 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 async function fetchAllSequences() {
     const allSequences = [];
     let page = 1;
-    const PAGE_SIZE = 100;
+    let rateLimited = false;
+    const startTime = Date.now();
+    const TIME_LIMIT = 45000; // stop fetching at 45s to leave room for response
 
     while (true) {
-        // Filter for active sequences at the API level to avoid fetching all 1000+
-        const data = await apiGet(
-            `/v1/sequences?page=${page}&limit=${PAGE_SIZE}&per_page=${PAGE_SIZE}&pageSize=${PAGE_SIZE}&status=active&type=active&filter=active`
-        );
+        // Safety: stop if we're running out of time
+        if (Date.now() - startTime > TIME_LIMIT) break;
+
+        let data;
+        try {
+            // SalesHandy API only accepts "page" — no other query params allowed
+            data = await apiGet(`/v1/sequences?page=${page}`);
+        } catch (err) {
+            if (err.isRateLimit) {
+                rateLimited = true;
+                break; // stop gracefully, return what we have so far
+            }
+            throw err;
+        }
 
         let items = null;
         for (const key of ['payload', 'data', 'sequences', 'items', 'results', 'list']) {
@@ -127,7 +139,7 @@ async function fetchAllSequences() {
             data.meta?.totalPages ?? data.meta?.last_page ?? null;
 
         if (totalPages !== null && page >= totalPages) break;
-        if (items.length < PAGE_SIZE) break;
+        if (items.length < 20) break;
         if (page >= 200) break;
         page++;
         await sleep(2000); // 2 seconds between pages to respect rate limits
@@ -143,7 +155,7 @@ async function fetchAllSequences() {
     });
 
     // Map to result format — use embedded counts if available, otherwise null
-    return active.map(seq => {
+    const sequences = active.map(seq => {
         const id = seq.id ?? seq._id ?? seq.sequenceId;
         const name = seq.name ?? seq.title ?? seq.sequenceName ?? `Sequence ${id}`;
 
@@ -162,6 +174,14 @@ async function fetchAllSequences() {
 
         return { id, name, notContactedCount: count !== null ? Number(count) : null };
     });
+
+    return {
+        sequences,
+        totalFetched: allSequences.length,
+        pagesFetched: page,
+        rateLimited,
+        partial: rateLimited || (Date.now() - startTime > TIME_LIMIT),
+    };
 }
 
 // ── Vercel handler ───────────────────────────────────────────────────────────
@@ -190,7 +210,7 @@ module.exports = async function handler(req, res) {
                     return res.status(200).json({ _debug: true, endpoint: probe, error: e.message });
                 }
             }
-            const listRaw = await apiGet('/v1/sequences?page=1&limit=100&status=active&type=active&filter=active', 1);
+            const listRaw = await apiGet('/v1/sequences?page=1', 1);
             return res.status(200).json({ _debug: true, raw: listRaw });
         }
 
@@ -207,16 +227,23 @@ module.exports = async function handler(req, res) {
             });
         }
 
-        const sequences = await fetchAllSequences();
-        cachedData = sequences;
+        const result = await fetchAllSequences();
+        cachedData = result.sequences;
         cacheTime = Date.now();
 
         res.setHeader('Cache-Control', 's-maxage=3600, stale-while-revalidate=1800');
         res.setHeader('X-Cache', 'MISS');
         res.status(200).json({
-            sequences,
+            sequences: result.sequences,
             threshold: THRESHOLD,
             lastUpdated: new Date(cacheTime).toISOString(),
+            _meta: {
+                totalFetched: result.totalFetched,
+                activeCount: result.sequences.length,
+                pagesFetched: result.pagesFetched,
+                partial: result.partial,
+                rateLimited: result.rateLimited,
+            },
         });
     } catch (err) {
         if (cachedData) {
