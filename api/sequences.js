@@ -73,6 +73,105 @@ async function apiGet(urlPath, retries = 3) {
     throw lastErr;
 }
 
+// ── Count extraction helpers ──────────────────────────────────────────────────
+
+/**
+ * Unwrap common API envelope layers: payload, data, sequence, result, etc.
+ * Returns an array of candidate objects to search for count fields.
+ */
+function unwrapAll(raw) {
+    const candidates = [raw];
+    if (raw && typeof raw === 'object') {
+        // Common wrapper keys
+        for (const key of ['payload', 'data', 'sequence', 'result', 'item', 'record']) {
+            if (raw[key] && typeof raw[key] === 'object') {
+                candidates.push(raw[key]);
+                // Two levels deep
+                for (const key2 of ['payload', 'data', 'sequence', 'result']) {
+                    if (raw[key][key2] && typeof raw[key][key2] === 'object') {
+                        candidates.push(raw[key][key2]);
+                    }
+                }
+            }
+        }
+    }
+    return candidates;
+}
+
+/**
+ * Try to extract the "not contacted" count from an object by checking
+ * every plausible field name and nested path.
+ */
+function extractNotContactedCount(obj) {
+    if (!obj || typeof obj !== 'object') return null;
+
+    // Direct field names (camelCase and snake_case variants)
+    const directFields = [
+        'notContactedCount', 'not_contacted_count',
+        'notContacted', 'not_contacted',
+        'pendingCount', 'pending_count',
+        'notStartedCount', 'not_started_count',
+        'newCount', 'new_count',
+        'queuedCount', 'queued_count',
+        'totalNotContacted', 'total_not_contacted',
+        'uncontactedCount', 'uncontacted_count',
+        'uncontacted',
+    ];
+
+    for (const f of directFields) {
+        if (obj[f] !== undefined && obj[f] !== null) return Number(obj[f]);
+    }
+
+    // Nested stat objects
+    const nestedKeys = [
+        'stats', 'prospectStats', 'prospects', 'statusCounts', 'statusCount',
+        'prospectCounts', 'prospectCount', 'counts', 'analytics', 'metrics',
+        'sequenceStats', 'sequenceProspectStats', 'prospectStatus',
+        'prospectStatusCounts', 'prospectStatusCount',
+    ];
+    const nestedFields = [
+        'notContacted', 'not_contacted', 'notContactedCount', 'not_contacted_count',
+        'NOT_CONTACTED', 'pending', 'pending_count', 'new', 'new_count',
+        'queued', 'notStarted', 'not_started',
+    ];
+
+    for (const nk of nestedKeys) {
+        const nested = obj[nk];
+        if (nested && typeof nested === 'object') {
+            for (const nf of nestedFields) {
+                if (nested[nf] !== undefined && nested[nf] !== null) return Number(nested[nf]);
+            }
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Extract total count from a prospect-list API response.
+ * Handles payload/data wrappers and many field name variants.
+ */
+function extractTotal(raw) {
+    const candidates = unwrapAll(raw);
+    const totalFields = ['total', 'totalCount', 'total_count', 'count', 'totalRecords', 'total_records'];
+    for (const obj of candidates) {
+        for (const f of totalFields) {
+            if (obj[f] !== undefined && obj[f] !== null && !isNaN(obj[f])) {
+                return Number(obj[f]);
+            }
+        }
+        // Also check pagination sub-objects
+        for (const pk of ['meta', 'pagination', 'paging', 'pageInfo']) {
+            if (obj[pk] && typeof obj[pk] === 'object') {
+                for (const f of totalFields) {
+                    if (obj[pk][f] !== undefined && obj[pk][f] !== null) return Number(obj[pk][f]);
+                }
+            }
+        }
+    }
+    return null;
+}
+
 // ── Sequence fetching ────────────────────────────────────────────────────────
 
 async function fetchAllSequences() {
@@ -81,19 +180,40 @@ async function fetchAllSequences() {
 
     while (true) {
         const data = await apiGet(`/v1/sequences?page=${page}`);
-        const items = data.payload || data.data || data.sequences || data.items || data.results || [];
 
-        if (!Array.isArray(items) || items.length === 0) {
-            if (page === 1 && Array.isArray(data) && data.length > 0) {
-                allSequences.push(...data);
-            }
-            break;
+        let items = null;
+        // Check if payload/data is a direct array
+        for (const key of ['payload', 'data', 'sequences', 'items', 'results', 'list']) {
+            if (Array.isArray(data[key])) { items = data[key]; break; }
         }
+        // If payload is an object with a nested array
+        if (!items) {
+            for (const wrapKey of ['payload', 'data']) {
+                if (data[wrapKey] && typeof data[wrapKey] === 'object') {
+                    for (const key of ['list', 'sequences', 'items', 'results', 'data']) {
+                        if (Array.isArray(data[wrapKey][key])) { items = data[wrapKey][key]; break; }
+                    }
+                    if (items) break;
+                }
+            }
+        }
+        // Last resort: top-level array
+        if (!items && Array.isArray(data)) items = data;
+        if (!items) items = [];
+
+        if (items.length === 0) break;
 
         allSequences.push(...items);
-        const totalPages = data.totalPages ?? data.total_pages ?? data.meta?.totalPages ?? data.meta?.last_page ?? null;
+
+        // Detect last page
+        const totalPages =
+            data.totalPages ?? data.total_pages ??
+            data.payload?.totalPages ?? data.payload?.total_pages ??
+            data.data?.totalPages ?? data.data?.total_pages ??
+            data.meta?.totalPages ?? data.meta?.last_page ?? null;
+
         if (totalPages !== null && page >= totalPages) break;
-        if (items.length < 20) break; // stop if fewer than a typical page size
+        if (items.length < 20) break; // fewer than typical page size → last page
         if (page >= 50) break;
         page++;
     }
@@ -105,42 +225,59 @@ async function fetchAllSequences() {
         return !inactive.includes(status);
     });
 
-    // Extract not-contacted counts — fetch details in parallel to avoid timeout
+    // Extract not-contacted counts — fetch details in parallel (max 5 at a time)
     async function getSequenceCount(seq) {
         const id = seq.id ?? seq._id ?? seq.sequenceId;
         const name = seq.name ?? seq.title ?? seq.sequenceName ?? `Sequence ${id}`;
 
-        // Try embedded count first
-        let count = seq.notContactedCount
-            ?? seq.not_contacted_count
-            ?? seq.notContacted
-            ?? seq.not_contacted
-            ?? seq.prospects?.notContacted
-            ?? seq.prospects?.not_contacted
-            ?? seq.stats?.notContacted
-            ?? seq.stats?.not_contacted
-            ?? seq.prospectStats?.notContacted
-            ?? seq.prospectStats?.not_contacted
-            ?? null;
+        // Strategy 1: try embedded count in the list item itself
+        for (const obj of unwrapAll(seq)) {
+            const count = extractNotContactedCount(obj);
+            if (count !== null) return { id, name, notContactedCount: count };
+        }
 
-        // If not embedded, fetch from detail endpoint
-        if (count === null || count === undefined) {
+        // Strategy 2: fetch sequence detail endpoint
+        for (const path of [`/v1/sequences/${id}`, `/v1/sequence/${id}`]) {
             try {
-                const detail = await apiGet(`/v1/sequences/${id}`, 1);
-                const s = detail.payload || detail.data || detail;
-                count = s.notContactedCount ?? s.not_contacted_count
-                    ?? s.notContacted ?? s.not_contacted
-                    ?? s.prospects?.notContacted ?? s.prospects?.not_contacted
-                    ?? s.stats?.notContacted ?? s.stats?.not_contacted
-                    ?? s.prospectStats?.notContacted ?? s.prospectStats?.not_contacted
-                    ?? null;
+                const detail = await apiGet(path, 1);
+                for (const obj of unwrapAll(detail)) {
+                    const count = extractNotContactedCount(obj);
+                    if (count !== null) return { id, name, notContactedCount: count };
+                }
             } catch (_) {}
         }
 
-        return { id, name, notContactedCount: count !== null ? Number(count) : null };
+        // Strategy 3: dedicated statistics / analytics endpoint
+        for (const path of [
+            `/v1/sequences/${id}/statistics`,
+            `/v1/sequences/${id}/stats`,
+            `/v1/sequences/${id}/analytics`,
+            `/v1/sequences/${id}/prospect-stats`,
+            `/v1/sequences/${id}/prospect-count`,
+            `/v1/sequences/${id}/prospect-status-count`,
+        ]) {
+            try {
+                const stat = await apiGet(path, 1);
+                for (const obj of unwrapAll(stat)) {
+                    const count = extractNotContactedCount(obj);
+                    if (count !== null) return { id, name, notContactedCount: count };
+                }
+            } catch (_) {}
+        }
+
+        // Strategy 4: prospect list endpoint with status filter
+        const statusValues = ['NOT_CONTACTED', 'notContacted', 'not_contacted', 'NOT CONTACTED', '0', 'new', 'pending'];
+        for (const status of statusValues) {
+            try {
+                const raw = await apiGet(`/v1/sequences/${id}/prospects?status=${encodeURIComponent(status)}&limit=1`, 1);
+                const total = extractTotal(raw);
+                if (total !== null) return { id, name, notContactedCount: total };
+            } catch (_) {}
+        }
+
+        return { id, name, notContactedCount: null };
     }
 
-    // Run all detail fetches in parallel (max 5 at a time to avoid rate limits)
     const results = [];
     const BATCH_SIZE = 5;
     for (let i = 0; i < active.length; i += BATCH_SIZE) {
@@ -150,6 +287,34 @@ async function fetchAllSequences() {
     }
 
     return results;
+}
+
+// ── Debug helper ──────────────────────────────────────────────────────────────
+
+/**
+ * Recursively collect all leaf paths and values in an object,
+ * up to maxDepth levels.  Returns an array of "path: value" strings.
+ */
+function flattenKeys(obj, prefix = '', depth = 0, maxDepth = 4) {
+    const lines = [];
+    if (!obj || typeof obj !== 'object' || depth > maxDepth) {
+        lines.push(`${prefix}: ${JSON.stringify(obj)}`);
+        return lines;
+    }
+    for (const [k, v] of Object.entries(obj)) {
+        const path = prefix ? `${prefix}.${k}` : k;
+        if (v && typeof v === 'object' && !Array.isArray(v)) {
+            lines.push(...flattenKeys(v, path, depth + 1, maxDepth));
+        } else if (Array.isArray(v)) {
+            lines.push(`${path}: [Array(${v.length})]`);
+            if (v.length > 0 && v[0] && typeof v[0] === 'object') {
+                lines.push(...flattenKeys(v[0], `${path}[0]`, depth + 1, maxDepth));
+            }
+        } else {
+            lines.push(`${path}: ${JSON.stringify(v)}`);
+        }
+    }
+    return lines;
 }
 
 // ── Vercel handler ───────────────────────────────────────────────────────────
@@ -168,9 +333,9 @@ module.exports = async function handler(req, res) {
     }
 
     try {
-        // Debug mode: probe a single endpoint to avoid rate limits
-        // Usage: ?debug=1&probe=/v1/sequences/KAPqxp1LwB/statistics
-        // Or:    ?debug=1  (just lists sequences)
+        // ── Debug mode ───────────────────────────────────────────────────────
+        // Usage: ?debug=1              → dump first-page sequence list + first sequence detail
+        //        ?debug=1&probe=PATH   → probe a specific SalesHandy API path
         if (req.query.debug === '1') {
             const probe = req.query.probe;
             if (probe) {
@@ -179,29 +344,70 @@ module.exports = async function handler(req, res) {
                     return res.status(200).json({
                         _debug: true,
                         endpoint: probe,
-                        keys: Object.keys(data),
-                        response: JSON.stringify(data).slice(0, 3000),
+                        flatKeys: flattenKeys(data),
+                        raw: data,
                     });
                 } catch (e) {
-                    return res.status(200).json({
-                        _debug: true,
-                        endpoint: probe,
-                        error: e.message,
-                    });
+                    return res.status(200).json({ _debug: true, endpoint: probe, error: e.message });
                 }
             }
-            // Default: just list sequences (1 API call)
-            const raw = await apiGet('/v1/sequences?page=1');
-            return res.status(200).json({
+
+            // Default debug: show full structure of first sequence + its detail
+            const listRaw = await apiGet('/v1/sequences?page=1', 1);
+
+            // Find first sequence
+            let firstSeq = null;
+            for (const key of ['payload', 'data', 'sequences', 'items', 'results', 'list']) {
+                if (Array.isArray(listRaw[key]) && listRaw[key].length > 0) {
+                    firstSeq = listRaw[key][0];
+                    break;
+                }
+                if (listRaw[key] && typeof listRaw[key] === 'object') {
+                    for (const k2 of ['list', 'sequences', 'items', 'data', 'results']) {
+                        if (Array.isArray(listRaw[key][k2]) && listRaw[key][k2].length > 0) {
+                            firstSeq = listRaw[key][k2][0];
+                            break;
+                        }
+                    }
+                    if (firstSeq) break;
+                }
+            }
+            if (!firstSeq && Array.isArray(listRaw) && listRaw.length > 0) firstSeq = listRaw[0];
+
+            const result = {
                 _debug: true,
-                keys: Object.keys(raw),
-                sample: JSON.stringify(raw).slice(0, 3000),
-            });
+                listResponseFlatKeys: flattenKeys(listRaw),
+                firstSequenceFlatKeys: firstSeq ? flattenKeys(firstSeq) : null,
+                firstSequence: firstSeq,
+            };
+
+            // Try fetching detail for first sequence
+            if (firstSeq) {
+                const id = firstSeq.id ?? firstSeq._id ?? firstSeq.sequenceId;
+                try {
+                    const detail = await apiGet(`/v1/sequences/${id}`, 1);
+                    result.detailFlatKeys = flattenKeys(detail);
+                    result.detailRaw = detail;
+                } catch (e) {
+                    result.detailError = e.message;
+                }
+
+                // Try prospects endpoint
+                try {
+                    const prospects = await apiGet(`/v1/sequences/${id}/prospects?status=NOT_CONTACTED&limit=1`, 1);
+                    result.prospectsNotContactedFlatKeys = flattenKeys(prospects);
+                    result.prospectsNotContactedRaw = prospects;
+                } catch (e) {
+                    result.prospectsError = e.message;
+                }
+            }
+
+            return res.status(200).json(result);
         }
 
+        // ── Normal mode ──────────────────────────────────────────────────────
         const fresh = req.query.fresh === '1';
 
-        // Use cache if available and not expired
         if (!fresh && cachedData && cacheTime && (Date.now() - cacheTime < CACHE_TTL)) {
             res.setHeader('Cache-Control', 's-maxage=3600, stale-while-revalidate=600');
             res.setHeader('X-Cache', 'HIT');
@@ -224,7 +430,6 @@ module.exports = async function handler(req, res) {
             lastUpdated: new Date(cacheTime).toISOString(),
         });
     } catch (err) {
-        // Serve stale cache on error
         if (cachedData) {
             res.setHeader('X-Cache', 'STALE');
             return res.status(200).json({
