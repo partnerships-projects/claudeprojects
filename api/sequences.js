@@ -225,21 +225,24 @@ module.exports = async function handler(req, res) {
                     listInfo = { totalOnPage1: items.length, activeOnPage1: items.filter(s => s.active === true).length };
                 }
 
-                const probeEndpoints = sampleId ? [
-                    `/v1/sequences/${sampleId}`,
-                    `/v1/sequences/${sampleId}/statistics`,
-                    `/v1/sequences/${sampleId}/stats`,
-                    `/v1/sequences/${sampleId}/prospects`,
-                    `/v1/sequences/${sampleId}/prospects?page=1`,
-                    `/v1/sequences/${sampleId}/analytics`,
-                    `/v1/sequences/${sampleId}/summary`,
-                    `/v1/sequence-statistics/${sampleId}`,
-                    `/v1/sequence/${sampleId}`,
-                    `/v1/sequence/${sampleId}/prospects`,
-                    `/v1/statistics/sequences/${sampleId}`,
-                    `/v1/prospects?sequenceId=${sampleId}`,
-                    `/v1/prospects?sequence_id=${sampleId}`,
-                ] : [];
+                // Round 2: probe top-level endpoints + OpenAPI spec + prospects
+                const probeEndpoints = [
+                    // OpenAPI/Swagger spec discovery
+                    `/api-doc/swagger.json`,
+                    `/swagger.json`,
+                    `/openapi.json`,
+                    `/v1/openapi.json`,
+                    // Top-level resource endpoints (no params = discover what's available)
+                    `/v1/prospects`,
+                    `/v1/prospects?page=1`,
+                    `/v1/sequence-statistics`,
+                    `/v1/statistics`,
+                    `/v1/analytics`,
+                    // Alternate path patterns for sequence stats
+                    `/v1/sequences/statistics`,
+                    `/v1/sequences/stats`,
+                    `/v1/sequence-statistics?page=1`,
+                ];
 
                 const probeResults = {};
                 for (const ep of probeEndpoints) {
