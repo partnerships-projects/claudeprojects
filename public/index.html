@@ -127,7 +127,7 @@
                     <option value="900">15 min</option>
                 </select>
             </div>
-            <button class="btn btn-primary" id="btn-refresh" onclick="fetchData(true)">Refresh</button>
+            <button class="btn btn-primary" id="btn-refresh" onclick="triggerRefresh()">Refresh</button>
         </div>
     </div>
 
@@ -190,7 +190,7 @@
 <script>
 var THRESHOLD = 2000;
 var refreshTimer = null;
-var isFetching = false;   // true while ?fetch=1 is in progress
+var isRefreshing = false;
 
 function setStatus(type, msg) {
     var bar = document.getElementById('status-bar');
@@ -209,6 +209,14 @@ function escapeHtml(str) {
     return div.innerHTML;
 }
 
+function updateTimestamp(lastUpdated, lastRefresh) {
+    var now = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    var parts = ['Page loaded: ' + now];
+    if (lastUpdated) parts.push('Data: ' + new Date(lastUpdated).toLocaleString());
+    if (lastRefresh) parts.push('Last refresh: ' + new Date(lastRefresh).toLocaleString());
+    document.getElementById('last-updated').textContent = parts.join(' — ');
+}
+
 function setAutoRefresh() {
     if (refreshTimer) clearInterval(refreshTimer);
     var seconds = Number(document.getElementById('refresh-interval').value);
@@ -217,18 +225,17 @@ function setAutoRefresh() {
     }
 }
 
-// ── Step 1: Load page instantly from cache, then fetch missing in parallel ───
+// ── Load page: instant read from cache, trigger refresh if stale ────────────
 
 async function loadPage() {
     var btn = document.getElementById('btn-refresh');
     btn.disabled = true;
 
-    // Handle ?reset=1 in the page URL — clear Redis cache first
+    // Handle ?reset=1 in the page URL
     var params = new URLSearchParams(window.location.search);
     if (params.get('reset') === '1') {
         try {
             await fetch('/api/sequences?reset=1');
-            // Clean the URL so refresh doesn't re-trigger reset
             window.history.replaceState({}, '', window.location.pathname);
         } catch (_) {}
     }
@@ -242,35 +249,25 @@ async function loadPage() {
         if (!res.ok) throw new Error(data.error || 'Server ' + res.status);
         if (data.threshold) THRESHOLD = data.threshold;
 
-        var meta = data._meta || {};
         var hasSequences = data.sequences && data.sequences.length > 0;
-        var hasPending = (meta.pendingStats || 0) > 0;
 
-        // Show whatever cached data we have immediately
         if (hasSequences) {
             renderResults(data.sequences);
-            var now = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-            document.getElementById('last-updated').textContent =
-                'Data from: ' + new Date(data.lastUpdated).toLocaleString() + ' — Page loaded: ' + now;
+            updateTimestamp(data.lastUpdated, data.lastRefresh);
         }
 
-        if (!hasSequences && !hasPending) {
-            document.getElementById('loader').classList.remove('active');
-            var msg = (meta.skippedEmpty || 0) > 0
-                ? 'All ' + meta.skippedEmpty + ' sequences have 0 uncontacted prospects.'
-                : 'No sequences found.';
-            setStatus('success', msg);
-            return;
-        }
+        var meta = data._meta || {};
 
-        // If there are pending stats, fetch them all in one parallel call
-        if (hasPending && !isFetching) {
+        if (meta.needsRefresh && !isRefreshing) {
+            // Data is stale — show it immediately, then refresh in background
             setStatus('info', hasSequences
-                ? 'Showing ' + data.sequences.length + ' cached. Fetching remaining stats...'
-                : 'Fetching stats for all sequences...');
-            fetchStatsInBackground();
-        } else if (!hasPending) {
-            setStatus('success', 'Loaded all ' + data.sequences.length + ' active sequences.');
+                ? 'Showing cached data. Refreshing from SalesHandy...'
+                : 'Fetching data from SalesHandy...');
+            triggerRefresh();
+        } else if (hasSequences) {
+            setStatus('success', 'Loaded ' + data.sequences.length + ' active sequences.');
+        } else {
+            setStatus('info', 'No sequences with uncontacted prospects found.');
         }
     } catch (err) {
         setStatus('error', 'Error: ' + err.message);
@@ -280,67 +277,46 @@ async function loadPage() {
     }
 }
 
-// Full refresh: re-fetch everything via parallel background fetch
-async function fetchData(forceRefresh) {
+// ── Trigger full refresh from SalesHandy ────────────────────────────────────
+
+async function triggerRefresh() {
+    if (isRefreshing) return;
+    isRefreshing = true;
+
     var btn = document.getElementById('btn-refresh');
     btn.disabled = true;
     document.getElementById('loader').classList.add('active');
 
-    await fetchStatsInBackground();
+    try {
+        setStatus('info', 'Refreshing all sequence stats from SalesHandy...');
+        var res = await fetch('/api/sequences?refresh=1');
+        var data;
+        try { data = await res.json(); } catch (_) { throw new Error('Non-JSON response'); }
+        if (!res.ok) throw new Error(data.error || 'Server ' + res.status);
 
-    document.getElementById('loader').classList.remove('active');
-    btn.disabled = false;
-}
-
-// ── Step 2: Fetch all stats — keep polling until done ────────────────────────
-
-async function fetchStatsInBackground() {
-    if (isFetching) return;
-    isFetching = true;
-
-    var MAX_ROUNDS = 20;       // safety cap
-    var PAUSE_BETWEEN = 2000;  // ms between rounds
-
-    for (var round = 0; round < MAX_ROUNDS; round++) {
-        try {
-            setStatus('info', round === 0
-                ? 'Fetching all sequence stats...'
-                : 'Fetching remaining stats (round ' + (round + 1) + ')...');
-            var res = await fetch('/api/sequences?fetch=1');
-            var data;
-            try { data = await res.json(); } catch (_) { throw new Error('Non-JSON response'); }
-            if (!res.ok) throw new Error(data.error || 'Server ' + res.status);
-
-            var meta = data._meta || {};
-
-            if (data.sequences && data.sequences.length > 0) {
-                renderResults(data.sequences);
-                var now = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-                document.getElementById('last-updated').textContent =
-                    'Data from: ' + new Date(data.lastUpdated).toLocaleString() + ' — Page loaded: ' + now;
-            }
-
-            // If no more pending, we're done
-            if ((meta.pendingStats || 0) === 0) {
-                setStatus('success', 'Loaded all ' + (data.sequences ? data.sequences.length : 0) + ' active sequences.');
-                break;
-            }
-
-            // Still pending — show progress
-            var total = meta.activeInApi || '?';
-            var done = (meta.withStats || 0) + (meta.skippedEmpty || 0);
-            setStatus('info', 'Loaded ' + done + '/' + total + '. Fetching remaining...');
-
-            // Brief pause before next round (let rate limits cool off)
-            await new Promise(function(r) { setTimeout(r, PAUSE_BETWEEN); });
-
-        } catch (err) {
-            setStatus('error', 'Fetch error: ' + err.message);
-            break;
+        // Another refresh is already running — wait and reload
+        if (data.ok === false && data.message) {
+            setStatus('info', data.message);
+            await new Promise(function(r) { setTimeout(r, 10000); });
+            isRefreshing = false;
+            await loadPage();
+            return;
         }
-    }
 
-    isFetching = false;
+        if (data.sequences && data.sequences.length > 0) {
+            renderResults(data.sequences);
+            updateTimestamp(data.lastUpdated, data.lastRefresh);
+            setStatus('success', 'Refreshed! ' + data.sequences.length + ' active sequences loaded.');
+        } else {
+            setStatus('info', 'Refresh complete. No sequences with uncontacted prospects.');
+        }
+    } catch (err) {
+        setStatus('error', 'Refresh error: ' + err.message);
+    } finally {
+        isRefreshing = false;
+        document.getElementById('loader').classList.remove('active');
+        btn.disabled = false;
+    }
 }
 
 function renderResults(sequences) {

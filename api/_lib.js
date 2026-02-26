@@ -1,51 +1,72 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Shared helpers: SalesHandy API + Upstash Redis
+// Shared helpers: SalesHandy API, Upstash Redis, config constants
 // ─────────────────────────────────────────────────────────────────────────────
 
 const https = require('https');
+
+// ── Config ──────────────────────────────────────────────────────────────────
 
 const SALESHANDY_BASE = 'https://leo-open-api-gateway.saleshandy.com';
 const API_KEY = process.env.SALESHANDY_API_KEY || '';
 const THRESHOLD = Number(process.env.THRESHOLD) || 2000;
 
-// Upstash Redis REST API (optional — falls back to in-memory if not set)
 const KV_URL = process.env.UPSTASH_REDIS_REST_URL || '';
 const KV_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || '';
 
-const HTTP_TIMEOUT = 8000;    // 8s per call — fail fast, retry next time
+// Redis keys
+const CACHE_KEY = 'saleshandy:not_contacted:active_sequences';
+const LOCK_KEY = 'saleshandy:refresh_lock';
+const LAST_REFRESH_KEY = 'saleshandy:last_refresh';
+
+// Timing / concurrency
+const HTTP_TIMEOUT = 8000;       // 8s per API call
+const CONCURRENCY = 5;           // max parallel requests to SalesHandy
+const BATCH_DELAY = 250;         // ms pause between batches (200-300ms)
+const CACHE_FRESH_MS = 3 * 60 * 1000;  // 3 minutes — data considered fresh
+const LOCK_TTL = 180;            // 3 minutes — refresh lock expiry
+const CACHE_TTL = 3600;          // 1 hour — Redis key safety-net expiry
+const WALL_CLOCK_LIMIT = 50000;  // 50s — stop before Vercel 60s limit
+
+// ── Utilities ───────────────────────────────────────────────────────────────
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 // ── Generic HTTPS helper ────────────────────────────────────────────────────
 
 function httpsRequest(method, url, body, headers = {}, timeout = HTTP_TIMEOUT) {
     return new Promise((resolve, reject) => {
-        const parsed = new URL(url.startsWith('http') ? url : url, url.startsWith('http') ? undefined : SALESHANDY_BASE);
+        const parsed = new URL(url);
         const postData = body ? JSON.stringify(body) : null;
         const options = {
             hostname: parsed.hostname,
             port: 443,
             path: parsed.pathname + parsed.search,
             method,
-            headers: {
-                'Content-Type': 'application/json',
-                ...headers,
-            },
+            headers: { 'Content-Type': 'application/json', ...headers },
         };
         if (postData) options.headers['Content-Length'] = Buffer.byteLength(postData);
 
         const req = https.request(options, (res) => {
-            let responseBody = '';
-            res.on('data', (chunk) => responseBody += chunk);
+            let data = '';
+            res.on('data', (c) => data += c);
             res.on('end', () => {
-                if (res.statusCode === 429 || (res.statusCode === 400 && responseBody.includes('Rate Limit'))) {
-                    reject(Object.assign(new Error('RATE_LIMITED'), { isRateLimit: true }));
+                if (res.statusCode === 429 || (res.statusCode === 400 && data.includes('Rate Limit'))) {
+                    const err = new Error('RATE_LIMITED');
+                    err.isRateLimit = true;
+                    const ra = res.headers['retry-after'];
+                    if (ra) {
+                        const n = Number(ra);
+                        err.retryAfterSec = !isNaN(n) ? n : null;
+                    }
+                    reject(err);
                     return;
                 }
                 if (res.statusCode >= 400) {
-                    reject(new Error(`${method} ${res.statusCode}: ${responseBody.slice(0, 200)}`));
+                    reject(new Error(`${method} ${res.statusCode}: ${data.slice(0, 200)}`));
                     return;
                 }
-                try { resolve(JSON.parse(responseBody)); }
-                catch (e) { reject(new Error(`Invalid JSON from ${method} ${parsed.pathname}`)); }
+                try { resolve(JSON.parse(data)); }
+                catch { reject(new Error(`Invalid JSON from ${method} ${parsed.pathname}`)); }
             });
         });
 
@@ -56,6 +77,8 @@ function httpsRequest(method, url, body, headers = {}, timeout = HTTP_TIMEOUT) {
     });
 }
 
+// ── SalesHandy API helper ───────────────────────────────────────────────────
+
 function shApi(method, path, body) {
     return httpsRequest(method, SALESHANDY_BASE + path, body, {
         'x-api-key': API_KEY,
@@ -63,16 +86,18 @@ function shApi(method, path, body) {
     });
 }
 
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
 // ── Upstash Redis helpers (REST API, zero packages) ─────────────────────────
+
+function redisCmd(cmd) {
+    return httpsRequest('POST', KV_URL, cmd, {
+        Authorization: `Bearer ${KV_TOKEN}`,
+    });
+}
 
 async function kvGet(key) {
     if (!KV_URL) return null;
     try {
-        const data = await httpsRequest('POST', `${KV_URL}`, ['GET', key], {
-            Authorization: `Bearer ${KV_TOKEN}`,
-        });
+        const data = await redisCmd(['GET', key]);
         return data.result ? JSON.parse(data.result) : null;
     } catch { return null; }
 }
@@ -83,10 +108,24 @@ async function kvSet(key, value, ttlSeconds) {
         const cmd = ttlSeconds
             ? ['SET', key, JSON.stringify(value), 'EX', String(ttlSeconds)]
             : ['SET', key, JSON.stringify(value)];
-        await httpsRequest('POST', `${KV_URL}`, cmd, {
-            Authorization: `Bearer ${KV_TOKEN}`,
-        });
-    } catch { /* silent fail — cache is best-effort */ }
+        await redisCmd(cmd);
+    } catch { /* best-effort */ }
+}
+
+async function kvDel(key) {
+    if (!KV_URL) return;
+    try { await redisCmd(['DEL', key]); } catch {}
+}
+
+// SET NX EX — acquire a lock (returns true if acquired, false if already held)
+async function kvSetNX(key, value, ttlSeconds) {
+    if (!KV_URL) return true; // no Redis = single-instance, always succeed
+    try {
+        const data = await redisCmd(
+            ['SET', key, JSON.stringify(value), 'NX', 'EX', String(ttlSeconds)]
+        );
+        return data.result === 'OK';
+    } catch { return false; }
 }
 
 // ── Extract items from SalesHandy API response ─────────────────────────────
@@ -100,81 +139,13 @@ function extractItems(data) {
         : Array.isArray(data) ? data : [];
 }
 
-// ── Fetch active sequence list from SalesHandy ─────────────────────────────
-
-async function fetchActiveSequenceList() {
-    const allSequences = [];
-    let page = 1;
-    let retries = 0;
-
-    while (page <= 50) {
-        let data;
-        try {
-            data = await shApi('GET', `/v1/sequences?page=${page}`, null);
-            retries = 0; // reset on success
-        } catch (err) {
-            // Retry on rate limit (up to 3 times per page)
-            if (err.isRateLimit && retries < 3) {
-                retries++;
-                await sleep(3000 * retries);
-                continue; // retry same page
-            }
-            break;
-        }
-        const items = extractItems(data);
-        if (!Array.isArray(items) || items.length === 0) break;
-        allSequences.push(...items);
-
-        // Respect totalPages if the API provides it
-        const totalPages = data.totalPages ?? data.total_pages
-            ?? data.meta?.totalPages ?? data.meta?.last_page ?? null;
-        if (totalPages !== null && page >= totalPages) break;
-
-        // API returns 100 per page — stop when we get a partial page
-        if (items.length < 100) break;
-        page++;
-        await sleep(300);
-    }
-
-    // progress === 1 means "active/running" in SalesHandy
-    return allSequences
-        .filter(s => s.progress === 1)
-        .map(s => ({
-            id: s.id || s._id || s.sequenceId,
-            name: s.name || s.title || s.sequenceName || `Sequence ${s.id}`,
-            client: s.client?.companyName || null,
-        }));
-}
-
-// ── Fetch one stat from SalesHandy ──────────────────────────────────────────
-
-async function fetchOneStat(seq) {
-    try {
-        const stats = await shApi('POST', '/v1/analytics/stats', { sequenceId: seq.id });
-        const p = stats.payload?.prospects?.[0];
-        if (!p) {
-            // API returned OK but unexpected shape — log it for debugging
-            return {
-                id: seq.id, ok: false, isRateLimit: false,
-                error: 'No prospects data. Keys: ' + Object.keys(stats.payload || stats).join(','),
-                rawPayload: JSON.stringify(stats).slice(0, 300),
-            };
-        }
-        return {
-            id: seq.id,
-            notContacted: Number(p.notContacted) || 0,
-            total: Number(p.total) || 0,
-            contacted: Number(p.contacted) || 0,
-            ok: true,
-        };
-    } catch (err) {
-        return { id: seq.id, isRateLimit: !!err.isRateLimit, ok: false, error: err.message };
-    }
-}
+// ── Exports ─────────────────────────────────────────────────────────────────
 
 module.exports = {
     API_KEY, THRESHOLD, KV_URL,
-    shApi, httpsRequest, sleep,
-    kvGet, kvSet,
-    extractItems, fetchActiveSequenceList, fetchOneStat,
+    CACHE_KEY, LOCK_KEY, LAST_REFRESH_KEY,
+    CONCURRENCY, BATCH_DELAY, CACHE_FRESH_MS, LOCK_TTL, CACHE_TTL, WALL_CLOCK_LIMIT,
+    shApi, sleep,
+    kvGet, kvSet, kvDel, kvSetNX,
+    extractItems,
 };
