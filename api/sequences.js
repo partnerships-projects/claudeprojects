@@ -1,12 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Vercel Serverless Function — SalesHandy Sequence Data
 // ─────────────────────────────────────────────────────────────────────────────
-//
-// Optimized for Vercel Hobby plan (10s timeout):
-//   - Parallel batch stats fetching (3 concurrent)
-//   - Progressive cache across warm requests
-//   - Auto-refresh from frontend fills in remaining stats
-// ─────────────────────────────────────────────────────────────────────────────
 
 const https = require('https');
 
@@ -14,10 +8,10 @@ const SALESHANDY_BASE = 'https://leo-open-api-gateway.saleshandy.com';
 const API_KEY = process.env.SALESHANDY_API_KEY || '';
 const THRESHOLD = Number(process.env.THRESHOLD) || 2000;
 
-// Time budget: 8s (2s buffer for Vercel's 10s limit on Hobby plan)
-const TIME_BUDGET = 8000;
-const HTTP_TIMEOUT = 5000;
-const BATCH_SIZE = 3; // concurrent stats requests per batch
+// Time budget: 50s (10s buffer for Vercel's 60s maxDuration)
+const TIME_BUDGET = 50000;
+const HTTP_TIMEOUT = 8000;
+const BATCH_SIZE = 5; // concurrent stats requests per batch
 
 // ── In-memory progressive cache (persists on warm instances) ──────────────
 
@@ -84,7 +78,7 @@ async function fetchActiveSequenceList(startTime) {
     let page = 1;
     let rateLimited = false;
 
-    while (elapsed() < TIME_BUDGET - 2000) { // leave 2s for stats
+    while (elapsed() < TIME_BUDGET / 2) { // use at most half the budget for pagination
         let data;
         try {
             data = await httpsRequest('GET', `/v1/sequences?page=${page}`, null);
@@ -103,7 +97,7 @@ async function fetchActiveSequenceList(startTime) {
         allSequences.push(...items);
         if (items.length < 20) break;
         page++;
-        await sleep(500);
+        await sleep(200);
     }
 
     // Use loose truthiness — API returns active:1 (number) not active:true (boolean)
@@ -178,9 +172,9 @@ async function fetchStatsParallel(activeSequences, startTime) {
             }
         }
 
-        // Small delay between batches to be nice to the API
+        // Small delay between batches to avoid rate limits
         if (i + BATCH_SIZE < needStats.length && !rateLimited) {
-            await sleep(300);
+            await sleep(150);
         }
     }
 
@@ -201,16 +195,14 @@ function buildResults(activeSequences) {
     for (const seq of activeSequences) {
         const stats = statsCache[seq.id];
         if (!stats) { pendingCount++; continue; }
-        if (stats.notContacted > 0) {
-            sequences.push({
-                id: seq.id,
-                name: seq.name,
-                notContactedCount: stats.notContacted,
-                totalProspects: stats.total,
-                contacted: stats.contacted,
-                client: seq.client,
-            });
-        }
+        sequences.push({
+            id: seq.id,
+            name: seq.name,
+            notContactedCount: stats.notContacted,
+            totalProspects: stats.total,
+            contacted: stats.contacted,
+            client: seq.client,
+        });
     }
 
     return { sequences, pendingCount };
