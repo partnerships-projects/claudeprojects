@@ -4,15 +4,6 @@
   "functions": {
     "api/sequences.js": {
       "maxDuration": 60
-    },
-    "api/cron.js": {
-      "maxDuration": 60
     }
-  },
-  "crons": [
-    {
-      "path": "/api/cron",
-      "schedule": "*/5 * * * *"
-    }
-  ]
+  }
 }
