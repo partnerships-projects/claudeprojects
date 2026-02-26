@@ -253,15 +253,32 @@ async function fetchData(forceRefresh) {
 
         var total = meta.activeInApi || '?';
 
+        // Build diagnostic string for debugging
+        var diag = '';
+        if (meta.errorCount > 0) {
+            diag += ' | Errors: ' + meta.errorCount;
+            if (meta.errors && meta.errors.length > 0) {
+                diag += ' — ' + meta.errors[0].error;
+                if (meta.errors[0].rawPayload) diag += ' [payload: ' + meta.errors[0].rawPayload.slice(0, 120) + ']';
+            }
+        }
+        if (meta.rateLimited) diag += ' | Rate limited';
+        if (meta.statsFetched !== undefined) diag += ' | Fetched: ' + meta.statsFetched;
+        if (meta.skippedEmpty) diag += ' | Skipped (0 uncontacted): ' + meta.skippedEmpty;
+        if (meta.staleChecked !== undefined) diag += ' | Stale: ' + meta.staleChecked;
+
         if (!hasSequences && !hasPending) {
-            let errMsg = 'No data yet. Background refresh is building the cache — try again in 1-2 minutes.';
-            pendingRefreshTimer = setTimeout(function() { fetchData(false); }, 20000);
+            var errMsg = 'No sequences with uncontacted prospects.';
+            if (meta.skippedEmpty > 0) errMsg = 'All ' + meta.skippedEmpty + ' sequences have 0 uncontacted prospects.';
+            errMsg += diag;
             setStatus('info', errMsg);
+            pendingRefreshTimer = setTimeout(function() { fetchData(false); }, 20000);
             return;
         }
 
         if (!hasSequences && hasPending) {
-            setStatus('info', 'Found ' + total + ' active sequences. Stats loading in background... refreshing in 15s.');
+            var msg = 'Found ' + total + ' active sequences. Stats loading... (' + meta.pendingStats + ' pending)' + diag + ' — refreshing in 15s.';
+            setStatus('info', msg);
             pendingRefreshTimer = setTimeout(function() { fetchData(false); }, 15000);
             return;
         }

@@ -5,8 +5,8 @@
 // With Redis (Upstash):
 //   1. Read cached response from Redis → return instantly (< 100ms)
 //   2. If data is stale, fetch new stats from SalesHandy → save to Redis
-//   3. Each page load progressively fills the cache (~20 stats per visit)
-//   4. Once all 136 are cached, page loads are instant until stats expire (1hr)
+//   3. Each page load progressively fills the cache
+//   4. Once all are cached, page loads are instant until stats expire (1hr)
 //
 // Without Redis:
 //   Falls back to direct SalesHandy fetch with in-memory cache.
@@ -18,7 +18,7 @@ const {
     fetchActiveSequenceList, fetchOneStat,
 } = require('./_lib');
 
-const BATCH = 20;
+const BATCH = 5;                    // smaller batches to avoid rate limits
 const STATS_MAX_AGE = 3600 * 1000;  // 1 hour — refetch stats after this
 const REDIS_TTL = 7200;             // 2 hours — Redis key expiry (safety net)
 
@@ -26,7 +26,6 @@ const REDIS_TTL = 7200;             // 2 hours — Redis key expiry (safety net)
 
 let memStats = {};
 let memSeqList = [];
-let memSeqListAt = 0;
 
 // ── Core: fetch stats from SalesHandy and save to Redis ──────────────────────
 
@@ -42,7 +41,7 @@ async function refreshStats() {
         }
     }
     // Also keep in memory
-    if (sequences.length > 0) { memSeqList = sequences; memSeqListAt = now; }
+    if (sequences.length > 0) { memSeqList = sequences; }
 
     // 2. Get existing stats (Redis → memory)
     let allStats = KV_URL ? (await kvGet('sh:stats')) || {} : memStats;
@@ -53,9 +52,11 @@ async function refreshStats() {
         return !cached || (now - cached.fetchedAt > STATS_MAX_AGE);
     });
 
-    // 4. Fetch in batches of 20, stop on rate limit
+    // 4. Fetch in small batches, track errors for debugging
     let fetched = 0;
     let rateLimited = false;
+    let errors = [];        // collect first few errors for diagnostics
+    let errorCount = 0;
 
     for (let i = 0; i < stale.length; i += BATCH) {
         const batch = stale.slice(i, i + BATCH);
@@ -72,11 +73,21 @@ async function refreshStats() {
                 fetched++;
             } else if (r.isRateLimit) {
                 rateLimited = true;
+            } else {
+                errorCount++;
+                // Keep first 3 errors for debugging
+                if (errors.length < 3) {
+                    errors.push({
+                        id: r.id,
+                        error: r.error || 'unknown',
+                        rawPayload: r.rawPayload || null,
+                    });
+                }
             }
         }
 
         if (rateLimited) break;
-        if (i + BATCH < stale.length) await sleep(100);
+        if (i + BATCH < stale.length) await sleep(300);
     }
 
     // 5. Save stats back
@@ -122,6 +133,8 @@ async function refreshStats() {
         statsFetched: fetched,
         rateLimited,
         staleChecked: stale.length,
+        errorCount,
+        errors,
     };
 }
 
@@ -134,6 +147,12 @@ module.exports = async function handler(req, res) {
 
     if (!API_KEY) {
         return res.status(500).json({ error: 'SALESHANDY_API_KEY not set.' });
+    }
+
+    // ?reset=1 — clear Redis cache and start fresh
+    if (req.query.reset === '1' && KV_URL) {
+        await Promise.all([kvSet('sh:response', null, 1), kvSet('sh:stats', null, 1), kvSet('sh:sequences', null, 1)]);
+        return res.status(200).json({ ok: true, message: 'Cache cleared. Refresh the page.' });
     }
 
     try {
@@ -162,7 +181,6 @@ module.exports = async function handler(req, res) {
                 });
 
                 // If stale, trigger a background refresh for next visit.
-                // Vercel supports waitUntil for background work after response.
                 if (!isFresh && res.waitUntil) {
                     res.waitUntil(refreshStats().catch(() => {}));
                 }
@@ -183,8 +201,12 @@ module.exports = async function handler(req, res) {
                 activeInApi: result.activeInApi,
                 withStats: result.sequences.length,
                 pendingStats: result.pendingStats,
+                skippedEmpty: result.skippedEmpty,
                 statsFetched: result.statsFetched,
                 staleChecked: result.staleChecked,
+                errorCount: result.errorCount,
+                errors: result.errors,
+                rateLimited: result.rateLimited,
             },
         });
     } catch (err) {

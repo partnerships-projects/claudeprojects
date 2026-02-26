@@ -136,15 +136,23 @@ async function fetchOneStat(seq) {
     try {
         const stats = await shApi('POST', '/v1/analytics/stats', { sequenceId: seq.id });
         const p = stats.payload?.prospects?.[0];
+        if (!p) {
+            // API returned OK but unexpected shape — log it for debugging
+            return {
+                id: seq.id, ok: false, isRateLimit: false,
+                error: 'No prospects data. Keys: ' + Object.keys(stats.payload || stats).join(','),
+                rawPayload: JSON.stringify(stats).slice(0, 300),
+            };
+        }
         return {
             id: seq.id,
-            notContacted: p ? (Number(p.notContacted) || 0) : 0,
-            total: p ? (Number(p.total) || 0) : 0,
-            contacted: p ? (Number(p.contacted) || 0) : 0,
+            notContacted: Number(p.notContacted) || 0,
+            total: Number(p.total) || 0,
+            contacted: Number(p.contacted) || 0,
             ok: true,
         };
     } catch (err) {
-        return { id: seq.id, isRateLimit: !!err.isRateLimit, ok: false };
+        return { id: seq.id, isRateLimit: !!err.isRateLimit, ok: false, error: err.message };
     }
 }
 
