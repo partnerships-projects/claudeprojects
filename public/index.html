@@ -249,27 +249,20 @@ async function fetchData(forceRefresh) {
         const meta = data._meta || {};
         const hasSequences = data.sequences && data.sequences.length > 0;
         const hasPending = meta.pendingStats > 0;
+        const source = meta.source || 'unknown';
 
         var total = meta.activeInApi || '?';
 
         if (!hasSequences && !hasPending) {
-            let errMsg = 'No active sequences found.';
-            if (meta.activeInApi === 0 && meta.totalInApi > 0) {
-                errMsg = 'Found ' + meta.totalInApi + ' sequences in API but none are active.';
-            } else if (meta.fetchError) {
-                errMsg = 'API error: ' + meta.fetchError + '. Retrying in 30s...';
-                pendingRefreshTimer = setTimeout(function() { fetchData(true); }, 30000);
-            } else if (meta.listRateLimited) {
-                errMsg = 'Rate limited by SalesHandy API. Retrying in 60s...';
-                pendingRefreshTimer = setTimeout(function() { fetchData(true); }, 60000);
-            }
-            setStatus('error', errMsg);
+            let errMsg = 'No data yet. Background refresh is building the cache — try again in 1-2 minutes.';
+            pendingRefreshTimer = setTimeout(function() { fetchData(false); }, 20000);
+            setStatus('info', errMsg);
             return;
         }
 
         if (!hasSequences && hasPending) {
-            setStatus('info', 'Found ' + total + ' active sequences. Loading stats... refreshing in 15s.');
-            pendingRefreshTimer = setTimeout(function() { fetchData(true); }, 15000);
+            setStatus('info', 'Found ' + total + ' active sequences. Stats loading in background... refreshing in 15s.');
+            pendingRefreshTimer = setTimeout(function() { fetchData(false); }, 15000);
             return;
         }
 
@@ -279,15 +272,13 @@ async function fetchData(forceRefresh) {
             ? 'Data from: ' + new Date(data.lastUpdated).toLocaleString() + ' — Page loaded: ' + now
             : 'Last updated: ' + now;
         document.getElementById('last-updated').textContent = updatedText;
-        if (data.warning) {
-            setStatus('info', data.warning);
-        } else if (hasPending || meta.statsRateLimited) {
+        if (hasPending) {
             var loaded = data.sequences.length;
             var pending = meta.pendingStats || 0;
-            setStatus('info', 'Loaded ' + loaded + ' of ' + total + ' sequences (' + pending + ' pending). Refreshing in 15s...');
-            pendingRefreshTimer = setTimeout(function() { fetchData(true); }, 15000);
+            setStatus('info', 'Showing ' + loaded + ' of ' + total + ' sequences (' + pending + ' still loading in background).');
         } else {
-            setStatus('success', 'Loaded all ' + data.sequences.length + ' active sequences.');
+            var sourceLabel = source === 'redis' ? ' (from cache)' : '';
+            setStatus('success', 'Loaded all ' + data.sequences.length + ' active sequences' + sourceLabel + '.');
         }
     } catch (err) {
         setStatus('error', 'Error: ' + err.message);

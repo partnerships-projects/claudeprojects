@@ -1,277 +1,69 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// Vercel Serverless Function — SalesHandy Sequence Data
+// Vercel Serverless Function — Serve sequence data
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// SalesHandy API rate-limits stats requests (~30 per window).
-// Strategy: fetch what we can per call, cache progressively,
-// frontend auto-refreshes every 60s to fill remaining stats.
+// FAST PATH: Reads pre-built response from Upstash Redis (< 100ms).
+// The /api/cron endpoint refreshes the data every 5 minutes in the background.
+//
+// FALLBACK: If Redis isn't configured or is empty, fetches directly from
+// SalesHandy API (slower, rate-limited, progressive loading).
 // ─────────────────────────────────────────────────────────────────────────────
 
-const https = require('https');
+const {
+    API_KEY, THRESHOLD, KV_URL,
+    kvGet, kvSet, sleep,
+    fetchActiveSequenceList, fetchOneStat,
+} = require('./_lib');
 
-const SALESHANDY_BASE = 'https://leo-open-api-gateway.saleshandy.com';
-const API_KEY = process.env.SALESHANDY_API_KEY || '';
-const THRESHOLD = Number(process.env.THRESHOLD) || 2000;
+// ── In-memory fallback cache (only used when Redis is not configured) ────────
 
-const HTTP_TIMEOUT = 5000;  // 5s per request — fail fast, don't block
+let memCache = { sequences: [], activeInApi: 0, pendingStats: 0, lastUpdated: null };
+let memStats = {};
+let memSeqList = [];
+let memSeqListAt = 0;
 
-// ── In-memory progressive cache (persists on warm instances) ──────────────
+// ── Fallback: direct SalesHandy fetch (old behavior) ────────────────────────
 
-let cachedSeqList = [];
-let seqListFetchedAt = 0;
-let statsCache = {};           // { seqId: { notContacted, total, contacted, fetchedAt } }
-let lastResponse = null;
-let lastResponseAt = 0;
-
-const RESPONSE_CACHE_TTL = 10 * 1000;  // 10s — shorter for faster progressive loading
-const SEQ_LIST_TTL = 15 * 60 * 1000;   // 15 min
-const STATS_TTL = 60 * 60 * 1000;      // 1 hour
-
-// ── HTTP helper ─────────────────────────────────────────────────────────────
-
-function httpsRequest(method, urlPath, body) {
-    return new Promise((resolve, reject) => {
-        const url = new URL(urlPath, SALESHANDY_BASE);
-        const postData = body ? JSON.stringify(body) : null;
-        const options = {
-            hostname: url.hostname,
-            port: 443,
-            path: url.pathname + url.search,
-            method,
-            headers: {
-                'x-api-key': API_KEY,
-                'Authorization': `Bearer ${API_KEY}`,
-                'Content-Type': 'application/json',
-            },
-        };
-        if (postData) options.headers['Content-Length'] = Buffer.byteLength(postData);
-
-        const req = https.request(options, (res) => {
-            let responseBody = '';
-            res.on('data', (chunk) => responseBody += chunk);
-            res.on('end', () => {
-                if (res.statusCode === 429 || (res.statusCode === 400 && responseBody.includes('Rate Limit'))) {
-                    reject(Object.assign(new Error('RATE_LIMITED'), { isRateLimit: true }));
-                    return;
-                }
-                if (res.statusCode >= 400) {
-                    reject(new Error(`${method} ${res.statusCode} on ${urlPath}`));
-                    return;
-                }
-                try { resolve(JSON.parse(responseBody)); }
-                catch (e) { reject(new Error(`Invalid JSON from ${method} ${urlPath}`)); }
-            });
-        });
-
-        req.on('error', (err) => reject(new Error(`Network error: ${err.message}`)));
-        req.setTimeout(HTTP_TIMEOUT, () => { req.destroy(); reject(new Error('Timeout')); });
-        if (postData) req.write(postData);
-        req.end();
-    });
-}
-
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
-// ── Extract items from API response ───────────────────────────────────────
-
-function extractItems(data) {
-    return Array.isArray(data.payload) ? data.payload
-        : Array.isArray(data.data) ? data.data
-        : Array.isArray(data.sequences) ? data.sequences
-        : Array.isArray(data.items) ? data.items
-        : Array.isArray(data.results) ? data.results
-        : Array.isArray(data) ? data : [];
-}
-
-// ── API Discovery: analyze all sequences with progress/active distribution ──
-
-async function discoverFilters() {
-    // Fetch ALL sequences using pageSize=1000 (API maximum per docs)
-    try {
-        const allItems = [];
-        let page = 1;
-        while (page <= 5) { // safety cap
-            const data = await httpsRequest('GET', `/v1/sequences?page=${page}&pageSize=1000`, null);
-            const items = extractItems(data);
-            if (items.length === 0) break;
-            allItems.push(...items);
-            if (items.length < 1000) break;
-            page++;
-            await sleep(300);
-        }
-
-        // Progress distribution: count + sample per value
-        const progressDist = {};
-        const samplesByProgress = {};
-        let activeTrue = 0, activeFalse = 0;
-        for (const s of allItems) {
-            const p = s.progress !== undefined ? s.progress : 'undefined';
-            progressDist[p] = (progressDist[p] || 0) + 1;
-            if (s.active) activeTrue++; else activeFalse++;
-            if (!samplesByProgress[p]) {
-                samplesByProgress[p] = { title: s.title, active: s.active, id: s.id };
-            }
-        }
-
-        return {
-            totalCount: allItems.length,
-            pagesFetched: page,
-            progressDistribution: progressDist,
-            activeDistribution: { true: activeTrue, false: activeFalse },
-            samplesByProgress,
-        };
-    } catch (err) {
-        return { error: err.message };
-    }
-}
-
-// ── Fetch active sequence list ────────────────────────────────────────────
-
-async function fetchActiveSequenceList() {
-    const allSequences = [];
-    let page = 1;
-    let rateLimited = false;
-    let fetchError = null;
-    let pageSize = 0;
-
-    while (page <= 10) {
-        let data;
-        try {
-            data = await httpsRequest('GET', `/v1/sequences?page=${page}&pageSize=1000`, null);
-        } catch (err) {
-            if (!fetchError) fetchError = err.message;
-            if (err.isRateLimit) { rateLimited = true; break; }
-            break;
-        }
-
-        const items = extractItems(data);
-        if (items.length === 0) break;
-        if (page === 1) pageSize = items.length;
-        allSequences.push(...items);
-        if (items.length < 1000) break; // pageSize=1000 is API max; fewer = last page
-        if (page >= 10) break; // safety cap
-        page++;
-        await sleep(200);
-    }
-
-    // Diagnostic: count sequences by progress value and active boolean
-    const progressCounts = {};
-    let activeTrue = 0, activeFalse = 0;
-    for (const s of allSequences) {
-        const p = s.progress !== undefined ? s.progress : 'undefined';
-        progressCounts[p] = (progressCounts[p] || 0) + 1;
-        if (s.active) activeTrue++; else activeFalse++;
-    }
-
-    // Confirmed mapping: progress=1 (active), progress=2 (paused), progress=3 (completed).
-    // active boolean correlates perfectly with progress=1 (136/136 match).
-    const active = allSequences.filter(s => s.progress === 1);
-
-    return {
-        active: active.map(s => ({
-            id: s.id || s._id || s.sequenceId,
-            name: s.name || s.title || s.sequenceName || `Sequence ${s.id}`,
-            client: s.client?.companyName || null,
-        })),
-        totalInApi: allSequences.length,
-        pagesFetched: page,
-        pageSize,
-        listRateLimited: rateLimited,
-        fetchError,
-        _diag: { progressCounts, activeTrue, activeFalse },
-    };
-}
-
-// ── Fetch one stat ──────────────────────────────────────────────────────
-
-async function fetchOneStat(seq) {
-    try {
-        const stats = await httpsRequest('POST', '/v1/analytics/stats', { sequenceId: seq.id });
-        // Response: { payload: { prospects: [{ total: "N", notContacted: "N", contacted: "N", ... }] } }
-        const p = stats.payload?.prospects?.[0];
-        return {
-            id: seq.id,
-            notContacted: p ? (Number(p.notContacted) || 0) : 0,
-            total: p ? (Number(p.total) || 0) : 0,
-            contacted: p ? (Number(p.contacted) || 0) : 0,
-            ok: true,
-        };
-    } catch (err) {
-        return { id: seq.id, isRateLimit: !!err.isRateLimit, ok: false };
-    }
-}
-
-// ── Fetch stats: moderate batches, stop on rate limit, return fast ────────
-
-async function fetchStatsParallel(activeSequences) {
+async function fallbackFetch() {
     const now = Date.now();
 
-    const needStats = activeSequences.filter(s => {
-        const cached = statsCache[s.id];
-        if (!cached) return true;
-        if (now - cached.fetchedAt > STATS_TTL) return true;
-        return false;
-    });
-
-    if (needStats.length === 0) {
-        return { statsFetched: 0, rateLimited: 0, alreadyCached: activeSequences.length, totalNeeded: 0 };
+    // Reuse sequence list for 15 min
+    if (memSeqList.length === 0 || now - memSeqListAt > 15 * 60 * 1000) {
+        const fresh = await fetchActiveSequenceList();
+        if (fresh.length > 0) {
+            memSeqList = fresh;
+            memSeqListAt = now;
+        }
     }
 
+    // Fetch stats in batches — stop on rate limit
+    const needStats = memSeqList.filter(s => !memStats[s.id] || now - memStats[s.id].fetchedAt > 3600000);
     let fetched = 0;
-    let rateLimited = 0;
-    const BATCH = 20;  // moderate concurrency — enough to get data, not enough to overwhelm API
+    const BATCH = 20;
 
     for (let i = 0; i < needStats.length; i += BATCH) {
         const batch = needStats.slice(i, i + BATCH);
         const results = await Promise.all(batch.map(seq => fetchOneStat(seq)));
-
-        let batchHadRateLimit = false;
+        let hitLimit = false;
         for (const r of results) {
             if (r.ok) {
-                statsCache[r.id] = {
-                    notContacted: r.notContacted,
-                    total: r.total,
-                    contacted: r.contacted,
-                    fetchedAt: now,
-                };
+                memStats[r.id] = { notContacted: r.notContacted, total: r.total, contacted: r.contacted, fetchedAt: now };
                 fetched++;
-            } else if (r.isRateLimit) {
-                batchHadRateLimit = true;
-                rateLimited++;
-            }
+            } else if (r.isRateLimit) { hitLimit = true; }
         }
-
-        // On rate limit: STOP immediately, return what we have.
-        // Don't waste time waiting/retrying — next refresh will fill in more.
-        if (batchHadRateLimit) break;
-
-        // Small gap between successful batches to stay under radar
+        if (hitLimit) break;
         if (i + BATCH < needStats.length) await sleep(100);
     }
 
-    return {
-        statsFetched: fetched,
-        rateLimited,
-        alreadyCached: activeSequences.length - needStats.length,
-        totalNeeded: needStats.length,
-    };
-}
-
-// ── Build results from cache ──────────────────────────────────────────────
-
-function buildResults(activeSequences) {
+    // Build response
     const sequences = [];
     let pendingCount = 0;
-    let skippedEmpty = 0;
-
-    for (const seq of activeSequences) {
-        const stats = statsCache[seq.id];
+    for (const seq of memSeqList) {
+        const stats = memStats[seq.id];
         if (!stats) { pendingCount++; continue; }
-        // Skip sequences with 0 not-contacted (empty/deleted/fully processed)
-        if (stats.notContacted < 1) { skippedEmpty++; continue; }
+        if (stats.notContacted < 1) continue;
         sequences.push({
-            id: seq.id,
-            name: seq.name,
+            id: seq.id, name: seq.name,
             notContactedCount: stats.notContacted,
             totalProspects: stats.total,
             contacted: stats.contacted,
@@ -279,64 +71,17 @@ function buildResults(activeSequences) {
         });
     }
 
-    return { sequences, pendingCount, skippedEmpty };
-}
-
-// ── Main orchestrator ─────────────────────────────────────────────────────
-
-async function fetchSequencesWithStats() {
-    const startTime = Date.now();
-    const elapsed = () => Date.now() - startTime;
-    const now = Date.now();
-
-    let activeSequences;
-    let totalInApi = 0;
-    let pagesFetched = 0;
-    let listRateLimited = false;
-    let fetchError = null;
-
-    let pageSize = 0;
-    let listDiag = null;
-
-    if (cachedSeqList.length > 0 && (now - seqListFetchedAt < SEQ_LIST_TTL)) {
-        activeSequences = cachedSeqList;
-    } else {
-        const listResult = await fetchActiveSequenceList();
-        activeSequences = listResult.active;
-        totalInApi = listResult.totalInApi;
-        pagesFetched = listResult.pagesFetched;
-        pageSize = listResult.pageSize;
-        listRateLimited = listResult.listRateLimited;
-        fetchError = listResult.fetchError;
-        listDiag = listResult._diag;
-        if (activeSequences.length > 0) {
-            cachedSeqList = activeSequences;
-            seqListFetchedAt = now;
-        }
-    }
-
-    const statsResult = await fetchStatsParallel(activeSequences);
-    const { sequences, pendingCount, skippedEmpty } = buildResults(activeSequences);
-
     return {
         sequences,
-        activeInApi: activeSequences.length,
-        totalInApi,
-        pagesFetched,
-        pageSize,
-        listRateLimited,
-        fetchError,
-        statsFetched: statsResult.statsFetched,
-        alreadyCached: statsResult.alreadyCached,
-        statsRateLimited: statsResult.rateLimited,
+        activeInApi: memSeqList.length,
         pendingStats: pendingCount,
-        skippedEmpty,
-        elapsedMs: elapsed(),
-        listDiag,
+        lastUpdated: new Date().toISOString(),
+        source: 'direct',
+        statsFetched: fetched,
     };
 }
 
-// ── Vercel handler ───────────────────────────────────────────────────────────
+// ── Handler ──────────────────────────────────────────────────────────────────
 
 module.exports = async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -348,93 +93,57 @@ module.exports = async function handler(req, res) {
     }
 
     try {
-        // Debug endpoint
-        if (req.query.debug === '1') {
-            try {
-                const probe = req.query.probe;
-                if (probe) {
-                    const method = req.query.method === 'POST' ? 'POST' : 'GET';
-                    const body = req.query.body ? JSON.parse(req.query.body) : null;
-                    const data = await httpsRequest(method, probe, body);
-                    return res.status(200).json({ _debug: true, endpoint: probe, raw: data });
-                }
-                return res.status(200).json({
-                    _debug: true,
-                    cacheStatus: {
-                        cachedSeqListLength: cachedSeqList.length,
-                        seqListAge: seqListFetchedAt ? Math.round((Date.now() - seqListFetchedAt) / 1000) + 's' : 'none',
-                        statsCacheEntries: Object.keys(statsCache).length,
-                        lastResponseAge: lastResponseAt ? Math.round((Date.now() - lastResponseAt) / 1000) + 's' : 'none',
+        let response;
+
+        if (KV_URL) {
+            // ── Fast path: read from Redis ──
+            const cached = await kvGet('sh:response');
+            if (cached && cached.sequences && cached.sequences.length > 0) {
+                response = {
+                    sequences: cached.sequences,
+                    threshold: THRESHOLD,
+                    lastUpdated: cached.lastUpdated,
+                    _meta: {
+                        source: 'redis',
+                        activeInApi: cached.activeInApi,
+                        withStats: cached.sequences.length,
+                        pendingStats: cached.pendingStats || 0,
+                        skippedEmpty: cached.skippedEmpty || 0,
                     },
-                });
-            } catch (e) {
-                return res.status(200).json({ _debug: true, error: e.message });
+                };
+                res.setHeader('X-Cache', 'HIT');
+                return res.status(200).json(response);
             }
-        }
 
-        // API Discovery mode: analyze all sequences
-        if (req.query.discover === '1') {
+            // Redis is empty (first deploy, or cron hasn't run yet).
+            // Trigger a cron run inline, then return what we get.
+            const cronUrl = `https://${req.headers.host}/api/cron`;
             try {
-                const results = await discoverFilters();
-                return res.status(200).json({ _discover: true, ...results });
-            } catch (e) {
-                return res.status(200).json({ _discover: true, error: e.message });
-            }
+                // Fire and forget — don't wait for it to finish
+                fetch(cronUrl).catch(() => {});
+            } catch {}
+
+            // Meanwhile, fall back to direct fetch
         }
 
-        // Flush all caches (use ?flush=1 to force full re-fetch)
-        if (req.query.flush === '1') {
-            cachedSeqList = [];
-            seqListFetchedAt = 0;
-            statsCache = {};
-            lastResponse = null;
-            lastResponseAt = 0;
-        }
-
-        // Short response cache
-        const fresh = req.query.fresh === '1' || req.query.flush === '1';
-        if (!fresh && lastResponse && (Date.now() - lastResponseAt < RESPONSE_CACHE_TTL)) {
-            res.setHeader('X-Cache', 'HIT');
-            return res.status(200).json(lastResponse);
-        }
-
-        const result = await fetchSequencesWithStats();
-
-        const response = {
+        // ── Fallback: direct SalesHandy fetch ──
+        const result = await fallbackFetch();
+        response = {
             sequences: result.sequences,
             threshold: THRESHOLD,
-            lastUpdated: new Date().toISOString(),
+            lastUpdated: result.lastUpdated,
             _meta: {
+                source: result.source,
                 activeInApi: result.activeInApi,
-                totalInApi: result.totalInApi,
-                statsFetched: result.statsFetched,
-                alreadyCached: result.alreadyCached,
                 withStats: result.sequences.length,
-                listRateLimited: result.listRateLimited,
-                statsRateLimited: result.statsRateLimited,
                 pendingStats: result.pendingStats,
-                skippedEmpty: result.skippedEmpty,
-                pagesFetched: result.pagesFetched,
-                pageSize: result.pageSize,
-                elapsedMs: result.elapsedMs,
-                fetchError: result.fetchError,
-                listDiag: result.listDiag,
+                statsFetched: result.statsFetched,
             },
         };
-
-        lastResponse = response;
-        lastResponseAt = Date.now();
 
         res.setHeader('X-Cache', 'MISS');
         res.status(200).json(response);
     } catch (err) {
-        if (lastResponse) {
-            res.setHeader('X-Cache', 'STALE');
-            return res.status(200).json({
-                ...lastResponse,
-                warning: 'Serving cached data — live fetch failed: ' + err.message,
-            });
-        }
         res.status(500).json({ error: err.message });
     }
 };
