@@ -86,50 +86,77 @@ function extractItems(data) {
         : Array.isArray(data) ? data : [];
 }
 
-// ── API Discovery: test filter parameters empirically ─────────────────────
+// ── API Discovery: test filter parameters & analyze progress distribution ──
 
 async function discoverFilters() {
-    const experiments = [];
-    // Test type=1..5 to find active filter
-    for (let t = 1; t <= 5; t++) {
-        experiments.push({ label: `type=${t}`, path: `/v1/sequences?type=${t}&page=1` });
-    }
-    // Also test unfiltered
-    experiments.push({ label: 'no-filter', path: '/v1/sequences?page=1' });
-
     const results = {};
-    for (const exp of experiments) {
+
+    // Test type=1..5 — already confirmed these return 400
+    for (let t = 1; t <= 5; t++) {
         try {
-            const data = await httpsRequest('GET', exp.path, null);
-            const items = extractItems(data);
-            // Capture response metadata (total, pagination info)
-            const meta = {};
-            for (const k of Object.keys(data)) {
-                if (k !== 'payload' && k !== 'data' && k !== 'sequences' && k !== 'items' && k !== 'results') {
-                    meta[k] = data[k];
-                }
-            }
-            // Sample: first item's scalar fields + ALL keys
-            const sample = items[0];
-            const sampleInfo = sample ? {
-                allKeys: Object.keys(sample),
-                scalarFields: {},
-            } : null;
-            if (sample) {
-                for (const k of Object.keys(sample)) {
-                    if (typeof sample[k] !== 'object' || sample[k] === null) {
-                        sampleInfo.scalarFields[k] = sample[k];
-                    } else {
-                        sampleInfo.scalarFields[k] = `[${typeof sample[k]}]`;
-                    }
-                }
-            }
-            results[exp.label] = { count: items.length, meta, sample: sampleInfo };
+            const data = await httpsRequest('GET', `/v1/sequences?type=${t}&page=1`, null);
+            results[`type=${t}`] = { count: extractItems(data).length };
         } catch (err) {
-            results[exp.label] = { error: err.message };
+            results[`type=${t}`] = { error: err.message };
         }
         await sleep(300);
     }
+
+    // No filter — fetch ALL pages and build complete distribution
+    try {
+        const allItems = [];
+        let page = 1;
+        let pageSize = 0;
+        while (page <= 20) { // safety cap
+            const data = await httpsRequest('GET', `/v1/sequences?page=${page}`, null);
+            const items = extractItems(data);
+            if (items.length === 0) break;
+            if (page === 1) pageSize = items.length;
+            allItems.push(...items);
+            if (items.length < pageSize) break;
+            page++;
+            await sleep(300);
+        }
+
+        // Progress distribution: count + sample per value
+        const progressDist = {};
+        const samplesByProgress = {};
+        let activeTrue = 0, activeFalse = 0;
+        for (const s of allItems) {
+            const p = s.progress !== undefined ? s.progress : 'undefined';
+            progressDist[p] = (progressDist[p] || 0) + 1;
+            if (s.active) activeTrue++; else activeFalse++;
+            if (!samplesByProgress[p]) {
+                samplesByProgress[p] = { title: s.title, active: s.active, id: s.id };
+            }
+        }
+
+        // First item full dump
+        const sample = allItems[0];
+        const sampleInfo = sample ? { allKeys: Object.keys(sample), scalarFields: {} } : null;
+        if (sample) {
+            for (const k of Object.keys(sample)) {
+                if (typeof sample[k] !== 'object' || sample[k] === null) {
+                    sampleInfo.scalarFields[k] = sample[k];
+                } else {
+                    sampleInfo.scalarFields[k] = `[${typeof sample[k]}]`;
+                }
+            }
+        }
+
+        results['no-filter'] = {
+            totalCount: allItems.length,
+            pagesFetched: page,
+            pageSize,
+            progressDistribution: progressDist,
+            activeDistribution: { true: activeTrue, false: activeFalse },
+            samplesByProgress,
+            sample: sampleInfo,
+        };
+    } catch (err) {
+        results['no-filter'] = { error: err.message };
+    }
+
     return results;
 }
 
@@ -173,8 +200,15 @@ async function fetchActiveSequenceList(startTime) {
         if (s.active) activeTrue++; else activeFalse++;
     }
 
-    // Filter: use active boolean for now (progress-based filter coming next)
-    const active = allSequences.filter(s => !!s.active);
+    // Filter: use progress field (active boolean is unreliable per server.js findings).
+    // Known progress values: 0=draft(?), 1=active/running(?), 2=paused(?), 3=completed(?).
+    // Strategy: exclude progress >= 3 (completed/archived); include if active or progress=1.
+    const active = allSequences.filter(s => {
+        if (typeof s.progress === 'number' && s.progress >= 3) return false;
+        if (s.active) return true;
+        if (s.progress === 1) return true;
+        return false;
+    });
 
     return {
         active: active.map(s => ({
