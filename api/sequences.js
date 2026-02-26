@@ -129,6 +129,52 @@ module.exports = async function handler(req, res) {
         return res.status(200).json({ ok: true, message: 'Cache cleared. Refresh the page.' });
     }
 
+    // ?debug=1 — show raw API data for diagnosing missing sequences
+    if (req.query.debug === '1') {
+        const { shApi, extractItems } = require('./_lib');
+        const pages = [];
+        let totalRaw = 0;
+        for (let p = 1; p <= 10; p++) {
+            try {
+                const data = await shApi('GET', `/v1/sequences?page=${p}`, null);
+                const items = extractItems(data);
+                const topKeys = Object.keys(data);
+                pages.push({
+                    page: p,
+                    topKeys,
+                    itemCount: items.length,
+                    totalPages: data.totalPages ?? data.total_pages ?? data.meta?.totalPages ?? null,
+                    sample: items.length > 0 ? {
+                        keys: Object.keys(items[0]),
+                        progress: items[0].progress,
+                        status: items[0].status,
+                        state: items[0].state,
+                        active: items[0].active,
+                        id: items[0].id,
+                        name: items[0].name,
+                    } : null,
+                    statusBreakdown: items.reduce((acc, s) => {
+                        const key = `progress=${s.progress} status=${s.status} state=${s.state}`;
+                        acc[key] = (acc[key] || 0) + 1;
+                        return acc;
+                    }, {}),
+                });
+                totalRaw += items.length;
+                if (items.length === 0 || items.length < 20) break;
+            } catch (err) {
+                pages.push({ page: p, error: err.message });
+                break;
+            }
+        }
+        const sequences = await fetchActiveSequenceList();
+        return res.status(200).json({
+            totalRawFromApi: totalRaw,
+            afterFilter: sequences.length,
+            pages,
+            filteredSequenceIds: sequences.map(s => s.id),
+        });
+    }
+
     try {
         const { sequences, allStats } = await getSequencesAndStats();
         const wantsFetch = req.query.fetch === '1';
