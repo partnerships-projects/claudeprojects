@@ -77,7 +77,7 @@ async function fetchActiveSequences() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function fetchNotContacted(sequenceId) {
-    const MAX_RETRIES = 3;
+    const MAX_RETRIES = 2;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         try {
             const stats = await shApi('POST', '/v1/analytics/stats', { sequenceId });
@@ -87,10 +87,10 @@ async function fetchNotContacted(sequenceId) {
         } catch (err) {
             if (attempt >= MAX_RETRIES) return null;
             if (err.isRateLimit) {
-                const wait = err.retryAfterSec || Math.pow(2, attempt + 1);
+                const wait = err.retryAfterSec || (attempt + 1) * 2;
                 await sleep(wait * 1000);
             } else {
-                await sleep(Math.pow(2, attempt + 1) * 1000);
+                await sleep((attempt + 1) * 1000);
             }
         }
     }
@@ -126,15 +126,10 @@ async function refreshCache() {
         const sequences = {};   // id → not_contacted count
         const metadata = {};    // id → { name, client }
         let errorCount = 0;
+        let timedOut = false;
 
         for (let i = 0; i < activeSequences.length; i += CONCURRENCY) {
-            if (Date.now() > deadline) {
-                return {
-                    ok: false, reason: 'timeout',
-                    fetched: Object.keys(sequences).length,
-                    total: activeSequences.length,
-                };
-            }
+            if (Date.now() > deadline) { timedOut = true; break; }
 
             const chunk = activeSequences.slice(i, i + CONCURRENCY);
             const results = await Promise.all(chunk.map(async (seq) => {
@@ -154,18 +149,27 @@ async function refreshCache() {
             }
         }
 
-        // 4. Build new object and atomically overwrite Redis key
-        const cacheData = {
-            last_updated: new Date().toISOString(),
-            sequences,
-            metadata,
+        // 4. Save whatever we have (partial on timeout is better than nothing)
+        const fetched = Object.keys(sequences).length;
+        if (fetched > 0) {
+            const cacheData = {
+                last_updated: new Date().toISOString(),
+                sequences,
+                metadata,
+            };
+            await kvSet(CACHE_KEY, cacheData, CACHE_TTL);
+
+            // 5. Update last_refresh timestamp
+            await kvSet(LAST_REFRESH_KEY, new Date().toISOString(), CACHE_TTL);
+        }
+
+        return {
+            ok: true,
+            total: activeSequences.length,
+            fetched,
+            errors: errorCount,
+            partial: timedOut,
         };
-        await kvSet(CACHE_KEY, cacheData, CACHE_TTL);
-
-        // 5. Update last_refresh timestamp
-        await kvSet(LAST_REFRESH_KEY, new Date().toISOString(), CACHE_TTL);
-
-        return { ok: true, total: activeSequences.length, errors: errorCount };
     } finally {
         // 6. Release lock
         await kvDel(LOCK_KEY);
@@ -303,16 +307,21 @@ module.exports = async function handler(req, res) {
                     message: 'Refresh already in progress. Try again shortly.',
                 });
             }
-            return res.status(200).json({ ok: false, ...result });
+            // no_active_sequences or other error — return whatever is in cache
+            const cached = await kvGet(CACHE_KEY);
+            return res.status(200).json({
+                ...(cached ? buildDashboardResponse(cached) : { sequences: [], threshold: THRESHOLD, lastUpdated: null }),
+                _meta: { source: 'refresh-error', ...result },
+            });
         }
 
-        // Return fresh data after successful refresh
+        // Return data after refresh (may be partial if timed out)
         const fresh = await kvGet(CACHE_KEY);
         const lastRefresh = await kvGet(LAST_REFRESH_KEY);
         return res.status(200).json({
-            ...buildDashboardResponse(fresh),
+            ...buildDashboardResponse(fresh || { sequences: {}, metadata: {} }),
             lastRefresh,
-            _meta: { source: 'refresh', ...result },
+            _meta: { source: result.partial ? 'refresh-partial' : 'refresh', ...result },
         });
     }
 
