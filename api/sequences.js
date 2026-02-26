@@ -30,38 +30,72 @@ const {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function fetchActiveSequences() {
-    const all = [];
-    let page = 1;
-    let retries = 0;
-
-    while (page <= 50) {
-        let data;
+    // 1. Fetch page 1 to get items + discover total page count
+    let firstData;
+    for (let attempt = 0; attempt < 3; attempt++) {
         try {
-            data = await shApi('GET', `/v1/sequences?page=${page}`, null);
-            retries = 0;
+            firstData = await shApi('GET', '/v1/sequences?page=1', null);
+            break;
         } catch (err) {
-            if (err.isRateLimit && retries < 3) {
-                retries++;
-                const wait = err.retryAfterSec || 3 * retries;
-                await sleep(wait * 1000);
+            if (err.isRateLimit && attempt < 2) {
+                await sleep((attempt + 1) * 2000);
                 continue;
             }
-            break;
+            return [];
         }
+    }
+    if (!firstData) return [];
 
-        const items = extractItems(data);
-        if (!Array.isArray(items) || items.length === 0) break;
-        all.push(...items);
+    const firstItems = extractItems(firstData);
+    if (!Array.isArray(firstItems) || firstItems.length === 0) return [];
 
-        const totalPages = data.totalPages ?? data.total_pages
-            ?? data.meta?.totalPages ?? data.meta?.last_page ?? null;
-        if (totalPages !== null && page >= totalPages) break;
-        if (items.length < 100) break;
-        page++;
-        await sleep(300);
+    const all = [...firstItems];
+
+    const totalPages = firstData.totalPages ?? firstData.total_pages
+        ?? firstData.meta?.totalPages ?? firstData.meta?.last_page ?? null;
+
+    // Single page — done
+    if ((totalPages !== null && totalPages <= 1) || firstItems.length < 100) {
+        return filterActive(all);
     }
 
-    return all
+    // 2. Fetch remaining pages in PARALLEL (batches of 5 pages at a time)
+    const lastPage = totalPages || 50;
+    const remaining = [];
+    for (let p = 2; p <= lastPage; p++) remaining.push(p);
+
+    for (let i = 0; i < remaining.length; i += 5) {
+        const batch = remaining.slice(i, i + 5);
+        const results = await Promise.all(batch.map(async (p) => {
+            for (let attempt = 0; attempt < 2; attempt++) {
+                try {
+                    return await shApi('GET', `/v1/sequences?page=${p}`, null);
+                } catch (err) {
+                    if (err.isRateLimit && attempt === 0) {
+                        await sleep(2000);
+                        continue;
+                    }
+                    return null;
+                }
+            }
+            return null;
+        }));
+
+        for (const data of results) {
+            if (!data) continue;
+            const items = extractItems(data);
+            if (Array.isArray(items)) all.push(...items);
+        }
+
+        // Brief pause between page batches
+        if (i + 5 < remaining.length) await sleep(100);
+    }
+
+    return filterActive(all);
+}
+
+function filterActive(items) {
+    return items
         .filter(s => s.progress === 1)
         .map(s => ({
             id: s.id || s._id || s.sequenceId,
@@ -122,7 +156,7 @@ async function refreshCache() {
             return { ok: false, reason: 'no_active_sequences' };
         }
 
-        // 3. Fetch counts with controlled concurrency (max 5 parallel)
+        // 3. Fetch counts with controlled concurrency
         const sequences = {};   // id → not_contacted count
         const metadata = {};    // id → { name, client }
         let errorCount = 0;

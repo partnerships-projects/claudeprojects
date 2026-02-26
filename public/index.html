@@ -304,8 +304,9 @@ async function triggerRefresh() {
         }
 
         var meta = data._meta || {};
+        var hasData = data.sequences && data.sequences.length > 0;
 
-        if (data.sequences && data.sequences.length > 0) {
+        if (hasData) {
             renderResults(data.sequences);
             updateTimestamp(data.lastUpdated, data.lastRefresh);
         }
@@ -314,17 +315,17 @@ async function triggerRefresh() {
         if (meta.partial) {
             var got = meta.fetched || '?';
             var total = meta.total || '?';
-            setStatus('info', 'Loaded ' + got + '/' + total + ' sequences (timed out). Fetching rest...');
+            setStatus('info', 'Loaded ' + got + '/' + total + ' sequences so far. Fetching remaining...');
             isRefreshing = false;
-            await new Promise(function(r) { setTimeout(r, 2000); });
+            await new Promise(function(r) { setTimeout(r, 3000); });
             triggerRefresh();
             return;
         }
 
-        if (data.sequences && data.sequences.length > 0) {
+        if (hasData) {
             setStatus('success', 'Refreshed! ' + data.sequences.length + ' active sequences loaded.');
         } else {
-            setStatus('info', 'Refresh complete. No sequences with uncontacted prospects.');
+            setStatus('info', 'Refresh complete. No active sequences found.');
         }
     } catch (err) {
         setStatus('error', 'Refresh error: ' + err.message);

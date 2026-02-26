@@ -20,8 +20,8 @@ const LAST_REFRESH_KEY = 'saleshandy:last_refresh';
 
 // Timing / concurrency
 const HTTP_TIMEOUT = 8000;       // 8s per API call
-const CONCURRENCY = 5;           // max parallel requests to SalesHandy
-const BATCH_DELAY = 250;         // ms pause between batches (200-300ms)
+const CONCURRENCY = 10;          // max parallel requests to SalesHandy
+const BATCH_DELAY = 100;         // ms pause between batches
 const CACHE_FRESH_MS = 3 * 60 * 1000;  // 3 minutes — data considered fresh
 const LOCK_TTL = 180;            // 3 minutes — refresh lock expiry
 const CACHE_TTL = 3600;          // 1 hour — Redis key safety-net expiry
