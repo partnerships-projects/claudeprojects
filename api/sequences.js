@@ -13,12 +13,7 @@ const SALESHANDY_BASE = 'https://leo-open-api-gateway.saleshandy.com';
 const API_KEY = process.env.SALESHANDY_API_KEY || '';
 const THRESHOLD = Number(process.env.THRESHOLD) || 2000;
 
-const TIME_BUDGET = 50000;   // 50s (10s buffer for Vercel's 60s maxDuration)
-const HTTP_TIMEOUT = 8000;
-const BATCH_SIZE = 10;       // fire 10 concurrent stats requests
-const BATCH_DELAY = 150;     // ms between batches (when not rate-limited)
-const RATE_LIMIT_BACKOFF = 3000; // ms to wait after hitting rate limit
-const MAX_RATE_RETRIES = 3;  // keep going after rate limits, don't give up
+const HTTP_TIMEOUT = 5000;  // 5s per request — fail fast, don't block
 
 // ── In-memory progressive cache (persists on warm instances) ──────────────
 
@@ -28,7 +23,7 @@ let statsCache = {};           // { seqId: { notContacted, total, contacted, fet
 let lastResponse = null;
 let lastResponseAt = 0;
 
-const RESPONSE_CACHE_TTL = 30 * 1000;  // 30s
+const RESPONSE_CACHE_TTL = 10 * 1000;  // 10s — shorter for faster progressive loading
 const SEQ_LIST_TTL = 15 * 60 * 1000;   // 15 min
 const STATS_TTL = 60 * 60 * 1000;      // 1 hour
 
@@ -132,15 +127,14 @@ async function discoverFilters() {
 
 // ── Fetch active sequence list ────────────────────────────────────────────
 
-async function fetchActiveSequenceList(startTime) {
-    const elapsed = () => Date.now() - startTime;
+async function fetchActiveSequenceList() {
     const allSequences = [];
     let page = 1;
     let rateLimited = false;
     let fetchError = null;
     let pageSize = 0;
 
-    while (elapsed() < TIME_BUDGET - 5000) { // leave 5s buffer for stats
+    while (page <= 10) {
         let data;
         try {
             data = await httpsRequest('GET', `/v1/sequences?page=${page}&pageSize=1000`, null);
@@ -207,10 +201,9 @@ async function fetchOneStat(seq) {
     }
 }
 
-// ── Fetch stats in parallel batches ──────────────────────────────────────
+// ── Fetch stats: fire all at once, cache what succeeds ───────────────────
 
-async function fetchStatsParallel(activeSequences, startTime) {
-    const elapsed = () => Date.now() - startTime;
+async function fetchStatsParallel(activeSequences) {
     const now = Date.now();
 
     const needStats = activeSequences.filter(s => {
@@ -220,45 +213,34 @@ async function fetchStatsParallel(activeSequences, startTime) {
         return false;
     });
 
+    if (needStats.length === 0) {
+        return { statsFetched: 0, rateLimited: 0, alreadyCached: activeSequences.length, totalNeeded: 0 };
+    }
+
+    // Fire ALL requests at once — no batching, no delays.
+    // Some will succeed before rate limit kicks in, the rest fail fast.
+    // Cached results persist; next refresh fills in more.
+    const results = await Promise.all(needStats.map(seq => fetchOneStat(seq)));
+
     let fetched = 0;
-    let rateLimitHits = 0;
-
-    let i = 0;
-    while (i < needStats.length && elapsed() < TIME_BUDGET) {
-        const batch = needStats.slice(i, i + BATCH_SIZE);
-        const results = await Promise.all(batch.map(seq => fetchOneStat(seq)));
-
-        let batchHadRateLimit = false;
-        for (const r of results) {
-            if (r.ok) {
-                statsCache[r.id] = {
-                    notContacted: r.notContacted,
-                    total: r.total,
-                    contacted: r.contacted,
-                    fetchedAt: now,
-                };
-                fetched++;
-            } else if (r.isRateLimit) {
-                batchHadRateLimit = true;
-            }
-        }
-
-        i += BATCH_SIZE;
-
-        if (batchHadRateLimit) {
-            rateLimitHits++;
-            if (rateLimitHits >= MAX_RATE_RETRIES || elapsed() > TIME_BUDGET) break;
-            // Back off then continue — don't give up
-            await sleep(RATE_LIMIT_BACKOFF);
-        } else if (i < needStats.length) {
-            await sleep(BATCH_DELAY);
+    let rateLimited = 0;
+    for (const r of results) {
+        if (r.ok) {
+            statsCache[r.id] = {
+                notContacted: r.notContacted,
+                total: r.total,
+                contacted: r.contacted,
+                fetchedAt: now,
+            };
+            fetched++;
+        } else if (r.isRateLimit) {
+            rateLimited++;
         }
     }
 
     return {
         statsFetched: fetched,
-        statsRateLimited: rateLimitHits > 0,
-        rateLimitHits,
+        rateLimited,
         alreadyCached: activeSequences.length - needStats.length,
         totalNeeded: needStats.length,
     };
@@ -308,7 +290,7 @@ async function fetchSequencesWithStats() {
     if (cachedSeqList.length > 0 && (now - seqListFetchedAt < SEQ_LIST_TTL)) {
         activeSequences = cachedSeqList;
     } else {
-        const listResult = await fetchActiveSequenceList(startTime);
+        const listResult = await fetchActiveSequenceList();
         activeSequences = listResult.active;
         totalInApi = listResult.totalInApi;
         pagesFetched = listResult.pagesFetched;
@@ -322,7 +304,7 @@ async function fetchSequencesWithStats() {
         }
     }
 
-    const statsResult = await fetchStatsParallel(activeSequences, startTime);
+    const statsResult = await fetchStatsParallel(activeSequences);
     const { sequences, pendingCount, skippedEmpty } = buildResults(activeSequences);
 
     return {
@@ -335,7 +317,7 @@ async function fetchSequencesWithStats() {
         fetchError,
         statsFetched: statsResult.statsFetched,
         alreadyCached: statsResult.alreadyCached,
-        statsRateLimited: statsResult.statsRateLimited,
+        statsRateLimited: statsResult.rateLimited,
         pendingStats: pendingCount,
         skippedEmpty,
         elapsedMs: elapsed(),
