@@ -167,16 +167,9 @@ async function fetchActiveSequenceList(startTime) {
         if (s.active) activeTrue++; else activeFalse++;
     }
 
-    // Filter: active boolean is the official documented field per SalesHandy API docs.
-    // progress field is undocumented but observed (values 0-3+).
-    // Strategy: use active boolean (official), plus progress=1 as safety net.
-    // Exclude progress >= 3 (likely completed/archived) even if active is somehow true.
-    const active = allSequences.filter(s => {
-        if (typeof s.progress === 'number' && s.progress >= 3) return false;
-        if (s.active) return true;
-        if (s.progress === 1) return true;
-        return false;
-    });
+    // Confirmed mapping: progress=1 (active), progress=2 (paused), progress=3 (completed).
+    // active boolean correlates perfectly with progress=1 (136/136 match).
+    const active = allSequences.filter(s => s.progress === 1);
 
     return {
         active: active.map(s => ({
