@@ -77,14 +77,27 @@ async function fetchActiveSequenceList(startTime) {
     const allSequences = [];
     let page = 1;
     let rateLimited = false;
+    let rawFirstPage = null;        // diagnostic: raw API response from page 1
+    let sampleRawSequence = null;   // diagnostic: first raw sequence object
 
     while (elapsed() < TIME_BUDGET / 2) { // use at most half the budget for pagination
         let data;
         try {
-            data = await httpsRequest('GET', `/v1/sequences?page=${page}`, null);
+            data = await httpsRequest('GET', `/v1/sequences?page=${page}&limit=100`, null);
         } catch (err) {
             if (err.isRateLimit) { rateLimited = true; break; }
             break;
+        }
+
+        // Save page 1 response shape for diagnostics (strip large arrays)
+        if (page === 1) {
+            rawFirstPage = Object.keys(data);
+            // Also check for pagination metadata
+            if (data.meta) rawFirstPage.push('meta:' + JSON.stringify(data.meta));
+            if (data.pagination) rawFirstPage.push('pagination:' + JSON.stringify(data.pagination));
+            if (data.totalCount !== undefined) rawFirstPage.push('totalCount:' + data.totalCount);
+            if (data.total !== undefined) rawFirstPage.push('total:' + data.total);
+            if (data.count !== undefined) rawFirstPage.push('count:' + data.count);
         }
 
         const items = Array.isArray(data.payload) ? data.payload
@@ -94,6 +107,12 @@ async function fetchActiveSequenceList(startTime) {
             : Array.isArray(data.results) ? data.results
             : Array.isArray(data) ? data : [];
         if (items.length === 0) break;
+
+        // Save first raw sequence for diagnostics
+        if (!sampleRawSequence && items.length > 0) {
+            sampleRawSequence = items[0];
+        }
+
         allSequences.push(...items);
         if (items.length < 20) break;
         page++;
@@ -111,22 +130,59 @@ async function fetchActiveSequenceList(startTime) {
         totalInApi: allSequences.length,
         pagesFetched: page,
         listRateLimited: rateLimited,
+        _diag: {
+            rawFirstPageKeys: rawFirstPage,
+            sampleRawSequence: sampleRawSequence ? {
+                id: sampleRawSequence.id,
+                allKeys: Object.keys(sampleRawSequence),
+                active: sampleRawSequence.active,
+                status: sampleRawSequence.status,
+                state: sampleRawSequence.state,
+                isActive: sampleRawSequence.isActive,
+                name: sampleRawSequence.name,
+                title: sampleRawSequence.title,
+            } : null,
+        },
     };
 }
 
 // ── Fetch one stat (no retry — just fail fast) ───────────────────────────
 
+let sampleRawStats = null; // diagnostic: first raw stats response
+
 async function fetchOneStat(seq) {
     try {
         const stats = await httpsRequest('POST', '/v1/analytics/stats', { sequenceId: seq.id });
-        const prospects = stats.payload?.prospects?.[0];
-        return {
-            id: seq.id,
-            notContacted: prospects ? (Number(prospects.notContacted) || 0) : 0,
-            total: prospects ? (Number(prospects.total) || 0) : 0,
-            contacted: prospects ? (Number(prospects.contacted) || 0) : 0,
-            ok: true,
-        };
+
+        // Save first raw stats response for diagnostics
+        if (!sampleRawStats) {
+            sampleRawStats = {
+                topKeys: Object.keys(stats),
+                payloadKeys: stats.payload ? Object.keys(stats.payload) : null,
+                dataKeys: stats.data ? Object.keys(stats.data) : null,
+                prospects: stats.payload?.prospects || stats.data?.prospects || stats.prospects || null,
+                raw: JSON.stringify(stats).slice(0, 2000), // first 2KB of raw response
+            };
+        }
+
+        // Try multiple possible response structures
+        const prospects = stats.payload?.prospects?.[0]
+            || stats.data?.prospects?.[0]
+            || stats.prospects?.[0]
+            || null;
+
+        // Try multiple possible field names for "not contacted"
+        const notContacted = prospects
+            ? (Number(prospects.notContacted) || Number(prospects.not_contacted) || Number(prospects.notcontacted) || Number(prospects.uncontacted) || 0)
+            : 0;
+        const total = prospects
+            ? (Number(prospects.total) || Number(prospects.totalProspects) || Number(prospects.total_prospects) || 0)
+            : 0;
+        const contacted = prospects
+            ? (Number(prospects.contacted) || 0)
+            : 0;
+
+        return { id: seq.id, notContacted, total, contacted, ok: true };
     } catch (err) {
         return { id: seq.id, isRateLimit: !!err.isRateLimit, ok: false };
     }
@@ -218,14 +274,18 @@ async function fetchSequencesWithStats() {
     let pagesFetched = 0;
     let listRateLimited = false;
 
+    let listDiag = null;
+
     if (cachedSeqList.length > 0 && (now - seqListFetchedAt < SEQ_LIST_TTL)) {
         activeSequences = cachedSeqList;
     } else {
+        sampleRawStats = null; // reset stats diagnostic on fresh list fetch
         const listResult = await fetchActiveSequenceList(startTime);
         activeSequences = listResult.active;
         totalInApi = listResult.totalInApi;
         pagesFetched = listResult.pagesFetched;
         listRateLimited = listResult.listRateLimited;
+        listDiag = listResult._diag;
         if (activeSequences.length > 0) {
             cachedSeqList = activeSequences;
             seqListFetchedAt = now;
@@ -246,6 +306,10 @@ async function fetchSequencesWithStats() {
         statsRateLimited: statsResult.statsRateLimited,
         pendingStats: pendingCount,
         elapsedMs: elapsed(),
+        _diag: {
+            list: listDiag,
+            sampleRawStats,
+        },
     };
 }
 
@@ -309,6 +373,7 @@ module.exports = async function handler(req, res) {
                 pendingStats: result.pendingStats,
                 pagesFetched: result.pagesFetched,
                 elapsedMs: result.elapsedMs,
+                _diag: result._diag,
             },
         };
 
