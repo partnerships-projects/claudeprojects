@@ -2,14 +2,13 @@
 // Vercel Serverless Function — SalesHandy Sequence Data
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// With Redis (Upstash):
-//   1. Read cached response from Redis → return instantly (< 100ms)
-//   2. If data is stale, fetch new stats from SalesHandy → save to Redis
-//   3. Each page load progressively fills the cache
-//   4. Once all are cached, page loads are instant until stats expire (1hr)
+// Two modes:
+//   GET /api/sequences         → Instant read from Redis (never calls SalesHandy)
+//   GET /api/sequences?fetch=1 → Fetch next batch of stats from SalesHandy,
+//                                 save to Redis, return updated data.
 //
-// Without Redis:
-//   Falls back to direct SalesHandy fetch with in-memory cache.
+// The frontend calls the fast endpoint first (instant page load), then
+// fires ?fetch=1 in the background to progressively fill stats.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const {
@@ -18,21 +17,44 @@ const {
     fetchActiveSequenceList, fetchOneStat,
 } = require('./_lib');
 
-const STATS_PER_REQUEST = 5;        // fetch at most 5 stats per API call → fast responses
-const STATS_MAX_AGE = 3600 * 1000;  // 1 hour — refetch stats after this
-const REDIS_TTL = 7200;             // 2 hours — Redis key expiry (safety net)
+const STATS_PER_FETCH = 3;         // fetch 3 stats per ?fetch=1 call (~10s)
+const STATS_MAX_AGE = 3600 * 1000; // 1 hour — refetch stats after this
+const REDIS_TTL = 7200;            // 2 hours — Redis key expiry (safety net)
 
-// ── In-memory cache (fallback when Redis not configured) ─────────────────────
+// ── Build response from cached data ─────────────────────────────────────────
 
-let memStats = {};
-let memSeqList = [];
-
-// ── Core: fetch stats from SalesHandy and save to Redis ──────────────────────
-
-async function refreshStats() {
+async function buildResponse(sequences, allStats) {
+    const responseSequences = [];
+    let pendingCount = 0;
+    let skippedEmpty = 0;
     const now = Date.now();
 
-    // 1. Get sequence list (Redis → SalesHandy API)
+    for (const seq of sequences) {
+        const stats = allStats[seq.id];
+        if (!stats || (now - stats.fetchedAt > STATS_MAX_AGE)) { pendingCount++; continue; }
+        if (stats.notContacted < 1) { skippedEmpty++; continue; }
+        responseSequences.push({
+            id: seq.id,
+            name: seq.name,
+            notContactedCount: stats.notContacted,
+            totalProspects: stats.total,
+            contacted: stats.contacted,
+            client: seq.client,
+        });
+    }
+
+    return {
+        sequences: responseSequences,
+        activeInApi: sequences.length,
+        pendingStats: pendingCount,
+        skippedEmpty,
+        lastUpdated: new Date().toISOString(),
+    };
+}
+
+// ── Ensure sequence list + stats are in Redis ───────────────────────────────
+
+async function getSequencesAndStats() {
     let sequences = KV_URL ? await kvGet('sh:sequences') : null;
     if (!sequences || sequences.length === 0) {
         sequences = await fetchActiveSequenceList();
@@ -40,26 +62,25 @@ async function refreshStats() {
             await kvSet('sh:sequences', sequences, REDIS_TTL);
         }
     }
-    // Also keep in memory
-    if (sequences.length > 0) { memSeqList = sequences; }
+    const allStats = KV_URL ? (await kvGet('sh:stats')) || {} : {};
+    return { sequences, allStats };
+}
 
-    // 2. Get existing stats (Redis → memory)
-    let allStats = KV_URL ? (await kvGet('sh:stats')) || {} : memStats;
+// ── Fetch next batch of stale stats ─────────────────────────────────────────
 
-    // 3. Find stale/missing stats
+async function fetchNextBatch(sequences, allStats) {
+    const now = Date.now();
     const stale = sequences.filter(s => {
         const cached = allStats[s.id];
         return !cached || (now - cached.fetchedAt > STATS_MAX_AGE);
     });
 
-    // 4. Fetch ONE AT A TIME, capped to STATS_PER_REQUEST so the API
-    //    responds fast (~10s). Frontend auto-refreshes to fill the rest.
     let fetched = 0;
     let rateLimitHits = 0;
     let errors = [];
     let errorCount = 0;
 
-    for (let i = 0; i < stale.length && fetched < STATS_PER_REQUEST; i++) {
+    for (let i = 0; i < stale.length && fetched < STATS_PER_FETCH; i++) {
         const r = await fetchOneStat(stale[i]);
 
         if (r.ok) {
@@ -72,70 +93,23 @@ async function refreshStats() {
             fetched++;
         } else if (r.isRateLimit) {
             rateLimitHits++;
-            await sleep(3000);  // wait 3s, then retry
-            i--;                // retry this same sequence
-            if (rateLimitHits > 3) break;  // give up after 3 rate limits
+            await sleep(3000);
+            i--; // retry
+            if (rateLimitHits > 3) break;
         } else {
             errorCount++;
             if (errors.length < 3) {
-                errors.push({
-                    id: r.id,
-                    error: r.error || 'unknown',
-                    rawPayload: r.rawPayload || null,
-                });
+                errors.push({ id: r.id, error: r.error || 'unknown' });
             }
         }
 
-        // Small delay between requests to avoid rate limits
         if (i < stale.length - 1) await sleep(600);
     }
 
-    // 5. Save stats back
-    if (KV_URL) {
-        await kvSet('sh:stats', allStats, REDIS_TTL);
-    }
-    memStats = allStats;
+    // Save updated stats
+    if (KV_URL) await kvSet('sh:stats', allStats, REDIS_TTL);
 
-    // 6. Build response
-    const responseSequences = [];
-    let pendingCount = 0;
-    let skippedEmpty = 0;
-
-    for (const seq of sequences) {
-        const stats = allStats[seq.id];
-        if (!stats) { pendingCount++; continue; }
-        if (stats.notContacted < 1) { skippedEmpty++; continue; }
-        responseSequences.push({
-            id: seq.id,
-            name: seq.name,
-            notContactedCount: stats.notContacted,
-            totalProspects: stats.total,
-            contacted: stats.contacted,
-            client: seq.client,
-        });
-    }
-
-    // 7. Cache full response in Redis for instant reads
-    const cachedResponse = {
-        sequences: responseSequences,
-        activeInApi: sequences.length,
-        pendingStats: pendingCount,
-        skippedEmpty,
-        lastUpdated: new Date().toISOString(),
-    };
-    if (KV_URL) {
-        await kvSet('sh:response', cachedResponse, REDIS_TTL);
-    }
-
-    return {
-        ...cachedResponse,
-        source: KV_URL ? 'redis+fresh' : 'direct',
-        statsFetched: fetched,
-        rateLimitHits,
-        staleChecked: stale.length,
-        errorCount,
-        errors,
-    };
+    return { fetched, rateLimitHits, errorCount, errors, staleCount: stale.length };
 }
 
 // ── Handler ──────────────────────────────────────────────────────────────────
@@ -156,53 +130,33 @@ module.exports = async function handler(req, res) {
     }
 
     try {
-        // ── Fast path: serve from Redis if fully loaded and fresh ──
-        if (KV_URL) {
-            const cached = await kvGet('sh:response');
-            if (cached && cached.sequences) {
-                const age = Date.now() - new Date(cached.lastUpdated).getTime();
-                const hasPending = (cached.pendingStats || 0) > 0;
+        const { sequences, allStats } = await getSequencesAndStats();
+        const wantsFetch = req.query.fetch === '1';
 
-                // Only use cache when ALL stats are loaded AND data is fresh (< 10 min).
-                // If stats are still pending, fall through to refreshStats() to fetch more.
-                if (!hasPending && age < 10 * 60 * 1000) {
-                    res.setHeader('X-Cache', 'HIT');
-                    return res.status(200).json({
-                        sequences: cached.sequences,
-                        threshold: THRESHOLD,
-                        lastUpdated: cached.lastUpdated,
-                        _meta: {
-                            source: 'redis',
-                            activeInApi: cached.activeInApi,
-                            withStats: cached.sequences.length,
-                            pendingStats: 0,
-                            skippedEmpty: cached.skippedEmpty || 0,
-                            ageSeconds: Math.round(age / 1000),
-                        },
-                    });
-                }
-            }
+        // ── ?fetch=1 → fetch next batch of stats from SalesHandy ──
+        let fetchMeta = {};
+        if (wantsFetch) {
+            fetchMeta = await fetchNextBatch(sequences, allStats);
         }
 
-        // ── Fetch next batch of stats (5 at a time) ──
-        const result = await refreshStats();
+        // ── Build response from current state ──
+        const result = await buildResponse(sequences, allStats);
 
-        res.setHeader('X-Cache', 'MISS');
+        // Save response snapshot to Redis
+        if (KV_URL) await kvSet('sh:response', result, REDIS_TTL);
+
+        res.setHeader('X-Cache', wantsFetch ? 'FETCH' : 'READ');
         res.status(200).json({
             sequences: result.sequences,
             threshold: THRESHOLD,
             lastUpdated: result.lastUpdated,
             _meta: {
-                source: result.source,
+                source: wantsFetch ? 'fetch' : 'cache',
                 activeInApi: result.activeInApi,
                 withStats: result.sequences.length,
                 pendingStats: result.pendingStats,
                 skippedEmpty: result.skippedEmpty,
-                statsFetched: result.statsFetched,
-                staleChecked: result.staleChecked,
-                errorCount: result.errorCount,
-                errors: result.errors,
-                rateLimitHits: result.rateLimitHits,
+                ...fetchMeta,
             },
         });
     } catch (err) {
