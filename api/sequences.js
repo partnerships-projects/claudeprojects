@@ -86,34 +86,19 @@ function extractItems(data) {
         : Array.isArray(data) ? data : [];
 }
 
-// ── API Discovery: test filter parameters & analyze progress distribution ──
+// ── API Discovery: analyze all sequences with progress/active distribution ──
 
 async function discoverFilters() {
-    const results = {};
-
-    // Test type=1..5 — already confirmed these return 400
-    for (let t = 1; t <= 5; t++) {
-        try {
-            const data = await httpsRequest('GET', `/v1/sequences?type=${t}&page=1`, null);
-            results[`type=${t}`] = { count: extractItems(data).length };
-        } catch (err) {
-            results[`type=${t}`] = { error: err.message };
-        }
-        await sleep(300);
-    }
-
-    // No filter — fetch ALL pages and build complete distribution
+    // Fetch ALL sequences using pageSize=1000 (API maximum per docs)
     try {
         const allItems = [];
         let page = 1;
-        let pageSize = 0;
-        while (page <= 20) { // safety cap
-            const data = await httpsRequest('GET', `/v1/sequences?page=${page}`, null);
+        while (page <= 5) { // safety cap
+            const data = await httpsRequest('GET', `/v1/sequences?page=${page}&pageSize=1000`, null);
             const items = extractItems(data);
             if (items.length === 0) break;
-            if (page === 1) pageSize = items.length;
             allItems.push(...items);
-            if (items.length < pageSize) break;
+            if (items.length < 1000) break;
             page++;
             await sleep(300);
         }
@@ -131,33 +116,16 @@ async function discoverFilters() {
             }
         }
 
-        // First item full dump
-        const sample = allItems[0];
-        const sampleInfo = sample ? { allKeys: Object.keys(sample), scalarFields: {} } : null;
-        if (sample) {
-            for (const k of Object.keys(sample)) {
-                if (typeof sample[k] !== 'object' || sample[k] === null) {
-                    sampleInfo.scalarFields[k] = sample[k];
-                } else {
-                    sampleInfo.scalarFields[k] = `[${typeof sample[k]}]`;
-                }
-            }
-        }
-
-        results['no-filter'] = {
+        return {
             totalCount: allItems.length,
             pagesFetched: page,
-            pageSize,
             progressDistribution: progressDist,
             activeDistribution: { true: activeTrue, false: activeFalse },
             samplesByProgress,
-            sample: sampleInfo,
         };
     } catch (err) {
-        results['no-filter'] = { error: err.message };
+        return { error: err.message };
     }
-
-    return results;
 }
 
 // ── Fetch active sequence list ────────────────────────────────────────────
@@ -173,7 +141,7 @@ async function fetchActiveSequenceList(startTime) {
     while (elapsed() < TIME_BUDGET - 5000) { // leave 5s buffer for stats
         let data;
         try {
-            data = await httpsRequest('GET', `/v1/sequences?page=${page}`, null);
+            data = await httpsRequest('GET', `/v1/sequences?page=${page}&pageSize=1000`, null);
         } catch (err) {
             if (!fetchError) fetchError = err.message;
             if (err.isRateLimit) { rateLimited = true; break; }
@@ -184,11 +152,10 @@ async function fetchActiveSequenceList(startTime) {
         if (items.length === 0) break;
         if (page === 1) pageSize = items.length;
         allSequences.push(...items);
-        // If we got fewer items than the first page, this is the last page
-        if (pageSize > 0 && items.length < pageSize) break;
-        if (page >= 100) break; // safety cap
+        if (items.length < 1000) break; // pageSize=1000 is API max; fewer = last page
+        if (page >= 10) break; // safety cap
         page++;
-        await sleep(500); // slower pagination to avoid burning rate limit on list
+        await sleep(500);
     }
 
     // Diagnostic: count sequences by progress value and active boolean
@@ -200,9 +167,10 @@ async function fetchActiveSequenceList(startTime) {
         if (s.active) activeTrue++; else activeFalse++;
     }
 
-    // Filter: use progress field (active boolean is unreliable per server.js findings).
-    // Known progress values: 0=draft(?), 1=active/running(?), 2=paused(?), 3=completed(?).
-    // Strategy: exclude progress >= 3 (completed/archived); include if active or progress=1.
+    // Filter: active boolean is the official documented field per SalesHandy API docs.
+    // progress field is undocumented but observed (values 0-3+).
+    // Strategy: use active boolean (official), plus progress=1 as safety net.
+    // Exclude progress >= 3 (likely completed/archived) even if active is somehow true.
     const active = allSequences.filter(s => {
         if (typeof s.progress === 'number' && s.progress >= 3) return false;
         if (s.active) return true;
@@ -404,11 +372,11 @@ module.exports = async function handler(req, res) {
             }
         }
 
-        // API Discovery mode: test different filter parameters
+        // API Discovery mode: analyze all sequences
         if (req.query.discover === '1') {
             try {
                 const results = await discoverFilters();
-                return res.status(200).json({ _discover: true, experiments: results });
+                return res.status(200).json({ _discover: true, ...results });
             } catch (e) {
                 return res.status(200).json({ _discover: true, error: e.message });
             }
