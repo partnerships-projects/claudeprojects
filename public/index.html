@@ -270,68 +270,59 @@ async function loadPage() {
     }
 }
 
-// Full refresh: clear stale flag and re-fetch everything
+// Full refresh: re-fetch everything via parallel background fetch
 async function fetchData(forceRefresh) {
     var btn = document.getElementById('btn-refresh');
     btn.disabled = true;
     document.getElementById('loader').classList.add('active');
-    setStatus('info', 'Refreshing all stats...');
 
-    try {
-        var res = await fetch('/api/sequences?fetch=1');
-        var data;
-        try { data = await res.json(); } catch (_) {
-            throw new Error('Server returned ' + res.status + ' (non-JSON)');
-        }
-        if (!res.ok) throw new Error(data.error || 'Server ' + res.status);
-        if (data.threshold) THRESHOLD = data.threshold;
+    await fetchStatsInBackground();
 
-        if (data.sequences && data.sequences.length > 0) {
-            renderResults(data.sequences);
-            var now = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-            document.getElementById('last-updated').textContent =
-                'Data from: ' + new Date(data.lastUpdated).toLocaleString() + ' — Page loaded: ' + now;
-            setStatus('success', 'Refreshed ' + data.sequences.length + ' active sequences.');
-        } else {
-            setStatus('success', 'No sequences with uncontacted prospects.');
-        }
-    } catch (err) {
-        setStatus('error', 'Error: ' + err.message);
-    } finally {
-        document.getElementById('loader').classList.remove('active');
-        btn.disabled = false;
-    }
+    document.getElementById('loader').classList.remove('active');
+    btn.disabled = false;
 }
 
-// ── Step 2: Fetch all stats in one call (server fetches in parallel) ─────────
+// ── Step 2: Fetch all stats in parallel (max 2 calls if server times out) ────
 
 async function fetchStatsInBackground() {
     if (isFetching) return;
     isFetching = true;
 
-    try {
-        setStatus('info', 'Fetching all sequence stats (parallel)...');
-        var res = await fetch('/api/sequences?fetch=1');
-        var data;
-        try { data = await res.json(); } catch (_) { throw new Error('Non-JSON response'); }
-        if (!res.ok) throw new Error(data.error || 'Server ' + res.status);
+    // At most 2 rounds (first gets ~60-70, second gets the rest)
+    for (var round = 0; round < 3; round++) {
+        try {
+            setStatus('info', round === 0
+                ? 'Fetching all sequence stats...'
+                : 'Fetching remaining stats...');
+            var res = await fetch('/api/sequences?fetch=1');
+            var data;
+            try { data = await res.json(); } catch (_) { throw new Error('Non-JSON response'); }
+            if (!res.ok) throw new Error(data.error || 'Server ' + res.status);
 
-        var meta = data._meta || {};
+            var meta = data._meta || {};
 
-        if (data.sequences && data.sequences.length > 0) {
-            renderResults(data.sequences);
-            var now = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-            document.getElementById('last-updated').textContent =
-                'Data from: ' + new Date(data.lastUpdated).toLocaleString() + ' — Page loaded: ' + now;
-            setStatus('success', 'Loaded all ' + data.sequences.length + ' active sequences.');
-        } else {
-            var msg2 = (meta.skippedEmpty || 0) > 0
-                ? 'All ' + meta.skippedEmpty + ' sequences have 0 uncontacted prospects.'
-                : 'No sequences with uncontacted prospects.';
-            setStatus('success', msg2);
+            if (data.sequences && data.sequences.length > 0) {
+                renderResults(data.sequences);
+                var now = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                document.getElementById('last-updated').textContent =
+                    'Data from: ' + new Date(data.lastUpdated).toLocaleString() + ' — Page loaded: ' + now;
+            }
+
+            // If no more pending, we're done
+            if ((meta.pendingStats || 0) === 0) {
+                setStatus('success', 'Loaded all ' + (data.sequences ? data.sequences.length : 0) + ' active sequences.');
+                break;
+            }
+
+            // Still pending — show progress, loop will call again
+            var total = meta.activeInApi || '?';
+            var done = (meta.withStats || 0) + (meta.skippedEmpty || 0);
+            setStatus('info', 'Loaded ' + done + '/' + total + '. Fetching remaining...');
+
+        } catch (err) {
+            setStatus('error', 'Fetch error: ' + err.message);
+            break;
         }
-    } catch (err) {
-        setStatus('error', 'Fetch error: ' + err.message);
     }
 
     isFetching = false;

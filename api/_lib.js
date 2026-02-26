@@ -12,7 +12,7 @@ const THRESHOLD = Number(process.env.THRESHOLD) || 2000;
 const KV_URL = process.env.UPSTASH_REDIS_REST_URL || '';
 const KV_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || '';
 
-const HTTP_TIMEOUT = 15000;   // 15s — analytics endpoint is slow
+const HTTP_TIMEOUT = 8000;    // 8s per call — fail fast, retry next time
 
 // ── Generic HTTPS helper ────────────────────────────────────────────────────
 

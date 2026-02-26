@@ -17,7 +17,8 @@ const {
     fetchActiveSequenceList, fetchOneStat,
 } = require('./_lib');
 
-const CONCURRENCY = 15;            // parallel API calls at once
+const CONCURRENCY = 20;            // parallel API calls at once
+const WALL_CLOCK_LIMIT = 50000;    // stop fetching after 50s (Vercel limit = 60s)
 const STATS_MAX_AGE = 3600 * 1000; // 1 hour — refetch stats after this
 const REDIS_TTL = 7200;            // 2 hours — Redis key expiry (safety net)
 
@@ -66,24 +67,26 @@ async function getSequencesAndStats() {
     return { sequences, allStats };
 }
 
-// ── Fetch ALL stale stats in parallel ────────────────────────────────────────
+// ── Fetch ALL stale stats in parallel (with wall-clock deadline) ─────────────
 
 async function fetchAllStatsParallel(sequences, allStats) {
     const now = Date.now();
+    const deadline = now + WALL_CLOCK_LIMIT;
     const stale = sequences.filter(s => {
         const cached = allStats[s.id];
         return !cached || (now - cached.fetchedAt > STATS_MAX_AGE);
     });
 
-    if (stale.length === 0) return { fetched: 0, staleCount: 0, errorCount: 0, errors: [] };
+    if (stale.length === 0) return { fetched: 0, staleCount: 0, errorCount: 0, errors: [], timedOut: false };
 
     let fetched = 0;
-    let rateLimitHits = 0;
     let errors = [];
-    const rateLimited = []; // sequences that got rate-limited, to retry
+    let timedOut = false;
 
-    // Process in parallel chunks
+    // Process in parallel chunks, save after each chunk
     for (let i = 0; i < stale.length; i += CONCURRENCY) {
+        if (Date.now() > deadline) { timedOut = true; break; }
+
         const chunk = stale.slice(i, i + CONCURRENCY);
         const results = await Promise.all(chunk.map(seq => fetchOneStat(seq)));
 
@@ -97,44 +100,16 @@ async function fetchAllStatsParallel(sequences, allStats) {
                     fetchedAt: now,
                 };
                 fetched++;
-            } else if (r.isRateLimit) {
-                rateLimitHits++;
-                rateLimited.push(chunk[j]);
             } else {
                 if (errors.length < 5) errors.push({ id: r.id, error: r.error || 'unknown' });
             }
         }
 
-        // If any rate limits in this chunk, pause before next chunk
-        if (rateLimitHits > 0) {
-            await sleep(2000);
-            rateLimitHits = 0;
-        }
+        // Save progress to Redis after each chunk (so timeout doesn't lose work)
+        if (KV_URL && fetched > 0) await kvSet('sh:stats', allStats, REDIS_TTL);
     }
 
-    // Retry rate-limited sequences (one more pass, smaller concurrency)
-    if (rateLimited.length > 0) {
-        await sleep(3000);
-        for (let i = 0; i < rateLimited.length; i += 5) {
-            const chunk = rateLimited.slice(i, i + 5);
-            const results = await Promise.all(chunk.map(seq => fetchOneStat(seq)));
-            for (const r of results) {
-                if (r.ok) {
-                    allStats[r.id] = {
-                        notContacted: r.notContacted, total: r.total,
-                        contacted: r.contacted, fetchedAt: now,
-                    };
-                    fetched++;
-                }
-            }
-            if (i + 5 < rateLimited.length) await sleep(1000);
-        }
-    }
-
-    // Save updated stats
-    if (KV_URL) await kvSet('sh:stats', allStats, REDIS_TTL);
-
-    return { fetched, staleCount: stale.length, errorCount: errors.length, errors };
+    return { fetched, staleCount: stale.length, errorCount: errors.length, errors, timedOut };
 }
 
 // ── Handler ──────────────────────────────────────────────────────────────────
