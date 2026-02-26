@@ -17,7 +17,7 @@ const {
     fetchActiveSequenceList, fetchOneStat,
 } = require('./_lib');
 
-const STATS_PER_FETCH = 3;         // fetch 3 stats per ?fetch=1 call (~10s)
+const CONCURRENCY = 15;            // parallel API calls at once
 const STATS_MAX_AGE = 3600 * 1000; // 1 hour — refetch stats after this
 const REDIS_TTL = 7200;            // 2 hours — Redis key expiry (safety net)
 
@@ -66,50 +66,75 @@ async function getSequencesAndStats() {
     return { sequences, allStats };
 }
 
-// ── Fetch next batch of stale stats ─────────────────────────────────────────
+// ── Fetch ALL stale stats in parallel ────────────────────────────────────────
 
-async function fetchNextBatch(sequences, allStats) {
+async function fetchAllStatsParallel(sequences, allStats) {
     const now = Date.now();
     const stale = sequences.filter(s => {
         const cached = allStats[s.id];
         return !cached || (now - cached.fetchedAt > STATS_MAX_AGE);
     });
 
+    if (stale.length === 0) return { fetched: 0, staleCount: 0, errorCount: 0, errors: [] };
+
     let fetched = 0;
     let rateLimitHits = 0;
     let errors = [];
-    let errorCount = 0;
+    const rateLimited = []; // sequences that got rate-limited, to retry
 
-    for (let i = 0; i < stale.length && fetched < STATS_PER_FETCH; i++) {
-        const r = await fetchOneStat(stale[i]);
+    // Process in parallel chunks
+    for (let i = 0; i < stale.length; i += CONCURRENCY) {
+        const chunk = stale.slice(i, i + CONCURRENCY);
+        const results = await Promise.all(chunk.map(seq => fetchOneStat(seq)));
 
-        if (r.ok) {
-            allStats[r.id] = {
-                notContacted: r.notContacted,
-                total: r.total,
-                contacted: r.contacted,
-                fetchedAt: now,
-            };
-            fetched++;
-        } else if (r.isRateLimit) {
-            rateLimitHits++;
-            await sleep(3000);
-            i--; // retry
-            if (rateLimitHits > 3) break;
-        } else {
-            errorCount++;
-            if (errors.length < 3) {
-                errors.push({ id: r.id, error: r.error || 'unknown' });
+        for (let j = 0; j < results.length; j++) {
+            const r = results[j];
+            if (r.ok) {
+                allStats[r.id] = {
+                    notContacted: r.notContacted,
+                    total: r.total,
+                    contacted: r.contacted,
+                    fetchedAt: now,
+                };
+                fetched++;
+            } else if (r.isRateLimit) {
+                rateLimitHits++;
+                rateLimited.push(chunk[j]);
+            } else {
+                if (errors.length < 5) errors.push({ id: r.id, error: r.error || 'unknown' });
             }
         }
 
-        if (i < stale.length - 1) await sleep(600);
+        // If any rate limits in this chunk, pause before next chunk
+        if (rateLimitHits > 0) {
+            await sleep(2000);
+            rateLimitHits = 0;
+        }
+    }
+
+    // Retry rate-limited sequences (one more pass, smaller concurrency)
+    if (rateLimited.length > 0) {
+        await sleep(3000);
+        for (let i = 0; i < rateLimited.length; i += 5) {
+            const chunk = rateLimited.slice(i, i + 5);
+            const results = await Promise.all(chunk.map(seq => fetchOneStat(seq)));
+            for (const r of results) {
+                if (r.ok) {
+                    allStats[r.id] = {
+                        notContacted: r.notContacted, total: r.total,
+                        contacted: r.contacted, fetchedAt: now,
+                    };
+                    fetched++;
+                }
+            }
+            if (i + 5 < rateLimited.length) await sleep(1000);
+        }
     }
 
     // Save updated stats
     if (KV_URL) await kvSet('sh:stats', allStats, REDIS_TTL);
 
-    return { fetched, rateLimitHits, errorCount, errors, staleCount: stale.length };
+    return { fetched, staleCount: stale.length, errorCount: errors.length, errors };
 }
 
 // ── Handler ──────────────────────────────────────────────────────────────────
@@ -136,7 +161,7 @@ module.exports = async function handler(req, res) {
         // ── ?fetch=1 → fetch next batch of stats from SalesHandy ──
         let fetchMeta = {};
         if (wantsFetch) {
-            fetchMeta = await fetchNextBatch(sequences, allStats);
+            fetchMeta = await fetchAllStatsParallel(sequences, allStats);
         }
 
         // ── Build response from current state ──
