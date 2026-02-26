@@ -223,6 +223,16 @@ async function loadPage() {
     var btn = document.getElementById('btn-refresh');
     btn.disabled = true;
 
+    // Handle ?reset=1 in the page URL — clear Redis cache first
+    var params = new URLSearchParams(window.location.search);
+    if (params.get('reset') === '1') {
+        try {
+            await fetch('/api/sequences?reset=1');
+            // Clean the URL so refresh doesn't re-trigger reset
+            window.history.replaceState({}, '', window.location.pathname);
+        } catch (_) {}
+    }
+
     try {
         var res = await fetch('/api/sequences');
         var data;
