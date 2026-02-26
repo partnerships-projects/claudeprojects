@@ -18,9 +18,9 @@ const {
     fetchActiveSequenceList, fetchOneStat,
 } = require('./_lib');
 
+const STATS_PER_REQUEST = 5;        // fetch at most 5 stats per API call → fast responses
 const STATS_MAX_AGE = 3600 * 1000;  // 1 hour — refetch stats after this
 const REDIS_TTL = 7200;             // 2 hours — Redis key expiry (safety net)
-const MAX_RUNTIME = 50000;          // 50s — stay under Vercel's 60s limit
 
 // ── In-memory cache (fallback when Redis not configured) ─────────────────────
 
@@ -52,19 +52,14 @@ async function refreshStats() {
         return !cached || (now - cached.fetchedAt > STATS_MAX_AGE);
     });
 
-    // 4. Fetch ONE AT A TIME with delays to avoid rate limits.
-    //    On rate limit → wait 5s and continue (don't stop).
-    //    Stop after 50s to stay under Vercel's 60s limit.
+    // 4. Fetch ONE AT A TIME, capped to STATS_PER_REQUEST so the API
+    //    responds fast (~10s). Frontend auto-refreshes to fill the rest.
     let fetched = 0;
     let rateLimitHits = 0;
     let errors = [];
     let errorCount = 0;
-    const startTime = Date.now();
 
-    for (let i = 0; i < stale.length; i++) {
-        // Time check — stop before Vercel kills us
-        if (Date.now() - startTime > MAX_RUNTIME) break;
-
+    for (let i = 0; i < stale.length && fetched < STATS_PER_REQUEST; i++) {
         const r = await fetchOneStat(stale[i]);
 
         if (r.ok) {
@@ -77,9 +72,9 @@ async function refreshStats() {
             fetched++;
         } else if (r.isRateLimit) {
             rateLimitHits++;
-            await sleep(5000);  // wait 5s, then continue
+            await sleep(3000);  // wait 3s, then retry
             i--;                // retry this same sequence
-            if (rateLimitHits > 5) break;  // give up after 5 rate limits
+            if (rateLimitHits > 3) break;  // give up after 3 rate limits
         } else {
             errorCount++;
             if (errors.length < 3) {
@@ -91,8 +86,8 @@ async function refreshStats() {
             }
         }
 
-        // Small delay between requests to be polite
-        if (i < stale.length - 1) await sleep(500);
+        // Small delay between requests to avoid rate limits
+        if (i < stale.length - 1) await sleep(600);
     }
 
     // 5. Save stats back
@@ -138,7 +133,6 @@ async function refreshStats() {
         statsFetched: fetched,
         rateLimitHits,
         staleChecked: stale.length,
-        elapsedMs: Date.now() - startTime,
         errorCount,
         errors,
     };
@@ -162,15 +156,14 @@ module.exports = async function handler(req, res) {
     }
 
     try {
-        // ── Fast path: serve from Redis if available and fresh ──
+        // ── Fast path: serve from Redis if available ──
         if (KV_URL) {
             const cached = await kvGet('sh:response');
-            if (cached && cached.sequences && cached.sequences.length > 0) {
-                // Check if data is still fresh (< 10 min old)
+            if (cached && cached.sequences) {
                 const age = Date.now() - new Date(cached.lastUpdated).getTime();
-                const isFresh = age < 10 * 60 * 1000;
+                const isFresh = age < 60 * 1000;  // 1 min — during loading, refresh frequently
 
-                // Return cached data immediately
+                // Return cached data immediately (even if sequences is empty — shows progress)
                 res.setHeader('X-Cache', isFresh ? 'HIT' : 'STALE');
                 res.status(200).json({
                     sequences: cached.sequences,
@@ -186,7 +179,7 @@ module.exports = async function handler(req, res) {
                     },
                 });
 
-                // If stale, trigger a background refresh for next visit.
+                // If stale, trigger background refresh to fetch more stats
                 if (!isFresh && res.waitUntil) {
                     res.waitUntil(refreshStats().catch(() => {}));
                 }
@@ -194,7 +187,7 @@ module.exports = async function handler(req, res) {
             }
         }
 
-        // ── No cache or Redis empty: fetch directly ──
+        // ── No cache at all: fetch directly (first ever request) ──
         const result = await refreshStats();
 
         res.setHeader('X-Cache', 'MISS');
@@ -213,7 +206,6 @@ module.exports = async function handler(req, res) {
                 errorCount: result.errorCount,
                 errors: result.errors,
                 rateLimitHits: result.rateLimitHits,
-                elapsedMs: result.elapsedMs,
             },
         });
     } catch (err) {

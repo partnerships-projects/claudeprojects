@@ -218,21 +218,25 @@ function setAutoRefresh() {
 
 var pendingRefreshTimer = null;
 
+var fetchRetryCount = 0;  // track consecutive errors
+
 async function fetchData(forceRefresh) {
     if (pendingRefreshTimer) { clearTimeout(pendingRefreshTimer); pendingRefreshTimer = null; }
-    const btn = document.getElementById('btn-refresh');
+    var btn = document.getElementById('btn-refresh');
     btn.disabled = true;
-    // Only hide results on first load (when nothing is shown yet)
-    if (!document.getElementById('tbody-all').innerHTML) {
+
+    // Only show full loader on very first load (nothing rendered yet)
+    var isFirstLoad = !document.getElementById('tbody-all').innerHTML;
+    if (isFirstLoad) {
         document.getElementById('results').classList.add('hidden');
+        document.getElementById('loader').classList.add('active');
     }
-    document.getElementById('loader').classList.add('active');
     setStatus('info', 'Fetching sequences from SalesHandy...');
 
     try {
-        const url = forceRefresh ? '/api/sequences?fresh=1' : '/api/sequences';
-        const res = await fetch(url);
-        let data;
+        var url = forceRefresh ? '/api/sequences?fresh=1' : '/api/sequences';
+        var res = await fetch(url);
+        var data;
         try { data = await res.json(); } catch (_) {
             throw new Error('Server returned ' + res.status + ' (non-JSON response)');
         }
@@ -240,65 +244,56 @@ async function fetchData(forceRefresh) {
             throw new Error(data.error || 'Server returned ' + res.status);
         }
 
-        if (data.threshold) {
-            THRESHOLD = data.threshold;
-        }
-
+        if (data.threshold) THRESHOLD = data.threshold;
         if (data.error) throw new Error(data.error);
 
-        const meta = data._meta || {};
-        const hasSequences = data.sequences && data.sequences.length > 0;
-        const hasPending = meta.pendingStats > 0;
-        const source = meta.source || 'unknown';
-
+        fetchRetryCount = 0;  // reset on success
+        var meta = data._meta || {};
+        var hasSequences = data.sequences && data.sequences.length > 0;
+        var hasPending = meta.pendingStats > 0;
+        var source = meta.source || 'unknown';
         var total = meta.activeInApi || '?';
+        var done = (meta.withStats || 0) + (meta.skippedEmpty || 0);
 
-        // Build diagnostic string for debugging
-        var diag = '';
-        if (meta.errorCount > 0) {
-            diag += ' | Errors: ' + meta.errorCount;
-            if (meta.errors && meta.errors.length > 0) {
-                diag += ' — ' + meta.errors[0].error;
-                if (meta.errors[0].rawPayload) diag += ' [payload: ' + meta.errors[0].rawPayload.slice(0, 120) + ']';
-            }
-        }
-        if (meta.rateLimitHits) diag += ' | Rate limited x' + meta.rateLimitHits;
-        if (meta.statsFetched !== undefined) diag += ' | Fetched: ' + meta.statsFetched;
-        if (meta.skippedEmpty) diag += ' | Skipped (0 uncontacted): ' + meta.skippedEmpty;
-        if (meta.staleChecked !== undefined) diag += ' | Stale: ' + meta.staleChecked;
+        // Progress info
+        var progress = total !== '?' ? ' (' + done + '/' + total + ' checked)' : '';
 
         if (!hasSequences && !hasPending) {
-            var errMsg = 'No sequences with uncontacted prospects.';
+            var errMsg = 'All sequences checked — none have uncontacted prospects.';
             if (meta.skippedEmpty > 0) errMsg = 'All ' + meta.skippedEmpty + ' sequences have 0 uncontacted prospects.';
-            errMsg += diag;
-            setStatus('info', errMsg);
-            pendingRefreshTimer = setTimeout(function() { fetchData(false); }, 20000);
+            setStatus('success', errMsg);
             return;
         }
 
         if (!hasSequences && hasPending) {
-            var msg = 'Found ' + total + ' active sequences. Stats loading... (' + meta.pendingStats + ' pending)' + diag + ' — refreshing in 15s.';
-            setStatus('info', msg);
-            pendingRefreshTimer = setTimeout(function() { fetchData(false); }, 15000);
+            setStatus('info', 'Loading stats for ' + total + ' sequences' + progress + '. Auto-refreshing every 10s...');
+            pendingRefreshTimer = setTimeout(function() { fetchData(false); }, 10000);
             return;
         }
 
+        // We have sequences to show
         renderResults(data.sequences);
-        const now = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        const updatedText = data.lastUpdated
+        var now = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        var updatedText = data.lastUpdated
             ? 'Data from: ' + new Date(data.lastUpdated).toLocaleString() + ' — Page loaded: ' + now
             : 'Last updated: ' + now;
         document.getElementById('last-updated').textContent = updatedText;
+
         if (hasPending) {
-            var loaded = data.sequences.length;
-            var pending = meta.pendingStats || 0;
-            setStatus('info', 'Showing ' + loaded + ' of ' + total + ' sequences (' + pending + ' still loading in background).');
+            setStatus('info', 'Showing ' + data.sequences.length + ' of ' + total + ' sequences' + progress + '. Still loading...');
+            pendingRefreshTimer = setTimeout(function() { fetchData(false); }, 10000);
         } else {
             var sourceLabel = source === 'redis' ? ' (from cache)' : '';
             setStatus('success', 'Loaded all ' + data.sequences.length + ' active sequences' + sourceLabel + '.');
         }
     } catch (err) {
-        setStatus('error', 'Error: ' + err.message);
+        fetchRetryCount++;
+        setStatus('error', 'Error: ' + err.message + (fetchRetryCount > 1 ? ' (retry ' + fetchRetryCount + ')' : ''));
+        // Auto-retry up to 5 times with increasing delay
+        if (fetchRetryCount <= 5) {
+            var delay = Math.min(fetchRetryCount * 10000, 30000);
+            pendingRefreshTimer = setTimeout(function() { fetchData(false); }, delay);
+        }
     } finally {
         document.getElementById('loader').classList.remove('active');
         btn.disabled = false;
