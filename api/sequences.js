@@ -315,8 +315,17 @@ module.exports = async function handler(req, res) {
             }
         }
 
+        // Flush all caches (use ?flush=1 to force full re-fetch)
+        if (req.query.flush === '1') {
+            cachedSeqList = [];
+            seqListFetchedAt = 0;
+            statsCache = {};
+            lastResponse = null;
+            lastResponseAt = 0;
+        }
+
         // Short response cache
-        const fresh = req.query.fresh === '1';
+        const fresh = req.query.fresh === '1' || req.query.flush === '1';
         if (!fresh && lastResponse && (Date.now() - lastResponseAt < RESPONSE_CACHE_TTL)) {
             res.setHeader('X-Cache', 'HIT');
             return res.status(200).json(lastResponse);
