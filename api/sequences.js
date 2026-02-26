@@ -83,8 +83,9 @@ async function fetchActiveSequenceList(startTime) {
     let page = 1;
     let rateLimited = false;
     let fetchError = null;
+    let pageSize = 0;
 
-    while (elapsed() < TIME_BUDGET / 2) {
+    while (elapsed() < TIME_BUDGET - 5000) { // leave 5s buffer for stats
         let data;
         try {
             data = await httpsRequest('GET', `/v1/sequences?page=${page}`, null);
@@ -101,25 +102,25 @@ async function fetchActiveSequenceList(startTime) {
             : Array.isArray(data.results) ? data.results
             : Array.isArray(data) ? data : [];
         if (items.length === 0) break;
+        if (page === 1) pageSize = items.length;
         allSequences.push(...items);
-        if (items.length < 20) break;
-        if (page >= 60) break; // safety cap
+        // If we got fewer items than the first page, this is the last page
+        if (pageSize > 0 && items.length < pageSize) break;
+        if (page >= 100) break; // safety cap
         page++;
-        await sleep(200);
+        await sleep(100); // fast pagination — rate limit mainly affects stats
     }
 
-    // Filter to active sequences: check status string first, fall back to active boolean.
-    // SalesHandy sometimes returns active:false for running sequences, but also
-    // returns no status for many old/deleted sequences — need both signals.
-    const INACTIVE_STATUSES = ['paused', 'stopped', 'archived', 'deleted', 'draft', 'disabled', 'completed', 'finished'];
-    const ACTIVE_STATUSES = ['active', 'running', 'live', 'in_progress', 'inprogress', 'started'];
-    const active = allSequences.filter(s => {
-        const status = (s.status || s.state || '').toString().toLowerCase();
-        if (INACTIVE_STATUSES.includes(status)) return false;
-        if (ACTIVE_STATUSES.includes(status)) return true;
-        // No recognizable status — fall back to active boolean
-        return !!s.active;
-    });
+    // Filter: active boolean is the only reliable signal.
+    // (status field is an object with email stats, NOT a string)
+    const active = allSequences.filter(s => !!s.active);
+
+    // Diagnostic: capture one raw sequence to see all fields
+    const sample = allSequences[0];
+    const sampleKeys = sample ? Object.keys(sample).filter(k => typeof sample[k] !== 'object') : [];
+    const sampleScalars = {};
+    for (const k of sampleKeys) sampleScalars[k] = sample[k];
+
     return {
         active: active.map(s => ({
             id: s.id || s._id || s.sequenceId,
@@ -128,8 +129,10 @@ async function fetchActiveSequenceList(startTime) {
         })),
         totalInApi: allSequences.length,
         pagesFetched: page,
+        pageSize,
         listRateLimited: rateLimited,
         fetchError,
+        _sampleSeq: sampleScalars,
     };
 }
 
@@ -236,6 +239,9 @@ async function fetchSequencesWithStats() {
     let listRateLimited = false;
     let fetchError = null;
 
+    let pageSize = 0;
+    let sampleSeq = null;
+
     if (cachedSeqList.length > 0 && (now - seqListFetchedAt < SEQ_LIST_TTL)) {
         activeSequences = cachedSeqList;
     } else {
@@ -243,8 +249,10 @@ async function fetchSequencesWithStats() {
         activeSequences = listResult.active;
         totalInApi = listResult.totalInApi;
         pagesFetched = listResult.pagesFetched;
+        pageSize = listResult.pageSize;
         listRateLimited = listResult.listRateLimited;
         fetchError = listResult.fetchError;
+        sampleSeq = listResult._sampleSeq;
         if (activeSequences.length > 0) {
             cachedSeqList = activeSequences;
             seqListFetchedAt = now;
@@ -259,6 +267,7 @@ async function fetchSequencesWithStats() {
         activeInApi: activeSequences.length,
         totalInApi,
         pagesFetched,
+        pageSize,
         listRateLimited,
         fetchError,
         statsFetched: statsResult.statsFetched,
@@ -266,6 +275,7 @@ async function fetchSequencesWithStats() {
         statsRateLimited: statsResult.statsRateLimited,
         pendingStats: pendingCount,
         elapsedMs: elapsed(),
+        sampleSeq,
     };
 }
 
@@ -328,8 +338,10 @@ module.exports = async function handler(req, res) {
                 statsRateLimited: result.statsRateLimited,
                 pendingStats: result.pendingStats,
                 pagesFetched: result.pagesFetched,
+                pageSize: result.pageSize,
                 elapsedMs: result.elapsedMs,
                 fetchError: result.fetchError,
+                sampleSeq: result.sampleSeq,
             },
         };
 
