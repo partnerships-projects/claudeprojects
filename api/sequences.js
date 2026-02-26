@@ -103,15 +103,23 @@ async function fetchActiveSequenceList(startTime) {
         if (items.length === 0) break;
         allSequences.push(...items);
         if (items.length < 20) break;
+        if (page >= 60) break; // safety cap
         page++;
         await sleep(200);
     }
 
-    const active = allSequences.filter(s => !!s.active);
+    // Filter to active sequences using status string, NOT the active boolean.
+    // SalesHandy returns active:false even for running sequences in some responses.
+    const INACTIVE = ['paused', 'stopped', 'archived', 'deleted', 'draft', 'disabled', 'completed', 'finished'];
+    const active = allSequences.filter(s => {
+        const status = (s.status || s.state || '').toString().toLowerCase();
+        if (INACTIVE.includes(status)) return false;
+        return true; // include if status is active/running/unknown — don't silently drop
+    });
     return {
         active: active.map(s => ({
-            id: s.id,
-            name: s.name || s.title || `Sequence ${s.id}`,
+            id: s.id || s._id || s.sequenceId,
+            name: s.name || s.title || s.sequenceName || `Sequence ${s.id}`,
             client: s.client?.companyName || null,
         })),
         totalInApi: allSequences.length,
