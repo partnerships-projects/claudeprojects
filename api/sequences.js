@@ -80,19 +80,21 @@ async function fetchActiveSequenceList(startTime) {
     let rawFirstPage = null;        // diagnostic: raw API response from page 1
     let sampleRawSequence = null;   // diagnostic: first raw sequence object
 
+    let fetchError = null; // diagnostic: capture first error
+
     while (elapsed() < TIME_BUDGET / 2) { // use at most half the budget for pagination
         let data;
         try {
-            data = await httpsRequest('GET', `/v1/sequences?page=${page}&limit=100`, null);
+            data = await httpsRequest('GET', `/v1/sequences?page=${page}`, null);
         } catch (err) {
+            if (!fetchError) fetchError = err.message;
             if (err.isRateLimit) { rateLimited = true; break; }
             break;
         }
 
-        // Save page 1 response shape for diagnostics (strip large arrays)
+        // Save page 1 response shape for diagnostics
         if (page === 1) {
             rawFirstPage = Object.keys(data);
-            // Also check for pagination metadata
             if (data.meta) rawFirstPage.push('meta:' + JSON.stringify(data.meta));
             if (data.pagination) rawFirstPage.push('pagination:' + JSON.stringify(data.pagination));
             if (data.totalCount !== undefined) rawFirstPage.push('totalCount:' + data.totalCount);
@@ -131,6 +133,7 @@ async function fetchActiveSequenceList(startTime) {
         pagesFetched: page,
         listRateLimited: rateLimited,
         _diag: {
+            fetchError,
             rawFirstPageKeys: rawFirstPage,
             sampleRawSequence: sampleRawSequence ? {
                 id: sampleRawSequence.id,
