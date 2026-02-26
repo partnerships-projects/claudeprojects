@@ -262,7 +262,7 @@ async function fetchData(forceRefresh) {
                 if (meta.errors[0].rawPayload) diag += ' [payload: ' + meta.errors[0].rawPayload.slice(0, 120) + ']';
             }
         }
-        if (meta.rateLimited) diag += ' | Rate limited';
+        if (meta.rateLimitHits) diag += ' | Rate limited x' + meta.rateLimitHits;
         if (meta.statsFetched !== undefined) diag += ' | Fetched: ' + meta.statsFetched;
         if (meta.skippedEmpty) diag += ' | Skipped (0 uncontacted): ' + meta.skippedEmpty;
         if (meta.staleChecked !== undefined) diag += ' | Stale: ' + meta.staleChecked;

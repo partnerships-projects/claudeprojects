@@ -12,11 +12,11 @@ const THRESHOLD = Number(process.env.THRESHOLD) || 2000;
 const KV_URL = process.env.UPSTASH_REDIS_REST_URL || '';
 const KV_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || '';
 
-const HTTP_TIMEOUT = 5000;
+const HTTP_TIMEOUT = 15000;   // 15s — analytics endpoint is slow
 
 // ── Generic HTTPS helper ────────────────────────────────────────────────────
 
-function httpsRequest(method, url, body, headers = {}) {
+function httpsRequest(method, url, body, headers = {}, timeout = HTTP_TIMEOUT) {
     return new Promise((resolve, reject) => {
         const parsed = new URL(url.startsWith('http') ? url : url, url.startsWith('http') ? undefined : SALESHANDY_BASE);
         const postData = body ? JSON.stringify(body) : null;
@@ -50,7 +50,7 @@ function httpsRequest(method, url, body, headers = {}) {
         });
 
         req.on('error', (err) => reject(new Error(`Network error: ${err.message}`)));
-        req.setTimeout(HTTP_TIMEOUT, () => { req.destroy(); reject(new Error('Timeout')); });
+        req.setTimeout(timeout, () => { req.destroy(); reject(new Error('Timeout')); });
         if (postData) req.write(postData);
         req.end();
     });

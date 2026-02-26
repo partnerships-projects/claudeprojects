@@ -18,9 +18,9 @@ const {
     fetchActiveSequenceList, fetchOneStat,
 } = require('./_lib');
 
-const BATCH = 5;                    // smaller batches to avoid rate limits
 const STATS_MAX_AGE = 3600 * 1000;  // 1 hour — refetch stats after this
 const REDIS_TTL = 7200;             // 2 hours — Redis key expiry (safety net)
+const MAX_RUNTIME = 50000;          // 50s — stay under Vercel's 60s limit
 
 // ── In-memory cache (fallback when Redis not configured) ─────────────────────
 
@@ -52,42 +52,47 @@ async function refreshStats() {
         return !cached || (now - cached.fetchedAt > STATS_MAX_AGE);
     });
 
-    // 4. Fetch in small batches, track errors for debugging
+    // 4. Fetch ONE AT A TIME with delays to avoid rate limits.
+    //    On rate limit → wait 5s and continue (don't stop).
+    //    Stop after 50s to stay under Vercel's 60s limit.
     let fetched = 0;
-    let rateLimited = false;
-    let errors = [];        // collect first few errors for diagnostics
+    let rateLimitHits = 0;
+    let errors = [];
     let errorCount = 0;
+    const startTime = Date.now();
 
-    for (let i = 0; i < stale.length; i += BATCH) {
-        const batch = stale.slice(i, i + BATCH);
-        const results = await Promise.all(batch.map(seq => fetchOneStat(seq)));
+    for (let i = 0; i < stale.length; i++) {
+        // Time check — stop before Vercel kills us
+        if (Date.now() - startTime > MAX_RUNTIME) break;
 
-        for (const r of results) {
-            if (r.ok) {
-                allStats[r.id] = {
-                    notContacted: r.notContacted,
-                    total: r.total,
-                    contacted: r.contacted,
-                    fetchedAt: now,
-                };
-                fetched++;
-            } else if (r.isRateLimit) {
-                rateLimited = true;
-            } else {
-                errorCount++;
-                // Keep first 3 errors for debugging
-                if (errors.length < 3) {
-                    errors.push({
-                        id: r.id,
-                        error: r.error || 'unknown',
-                        rawPayload: r.rawPayload || null,
-                    });
-                }
+        const r = await fetchOneStat(stale[i]);
+
+        if (r.ok) {
+            allStats[r.id] = {
+                notContacted: r.notContacted,
+                total: r.total,
+                contacted: r.contacted,
+                fetchedAt: now,
+            };
+            fetched++;
+        } else if (r.isRateLimit) {
+            rateLimitHits++;
+            await sleep(5000);  // wait 5s, then continue
+            i--;                // retry this same sequence
+            if (rateLimitHits > 5) break;  // give up after 5 rate limits
+        } else {
+            errorCount++;
+            if (errors.length < 3) {
+                errors.push({
+                    id: r.id,
+                    error: r.error || 'unknown',
+                    rawPayload: r.rawPayload || null,
+                });
             }
         }
 
-        if (rateLimited) break;
-        if (i + BATCH < stale.length) await sleep(300);
+        // Small delay between requests to be polite
+        if (i < stale.length - 1) await sleep(500);
     }
 
     // 5. Save stats back
@@ -131,8 +136,9 @@ async function refreshStats() {
         ...cachedResponse,
         source: KV_URL ? 'redis+fresh' : 'direct',
         statsFetched: fetched,
-        rateLimited,
+        rateLimitHits,
         staleChecked: stale.length,
+        elapsedMs: Date.now() - startTime,
         errorCount,
         errors,
     };
@@ -206,7 +212,8 @@ module.exports = async function handler(req, res) {
                 staleChecked: result.staleChecked,
                 errorCount: result.errorCount,
                 errors: result.errors,
-                rateLimited: result.rateLimited,
+                rateLimitHits: result.rateLimitHits,
+                elapsedMs: result.elapsedMs,
             },
         });
     } catch (err) {
