@@ -106,12 +106,8 @@ async function fetchActiveSequenceList(startTime) {
         await sleep(500);
     }
 
-    // NOTE: Do NOT use s.active === true — API returns active:false even for running sequences
-    const active = allSequences.filter(s => {
-        const status = (s.status || s.state || '').toString().toLowerCase();
-        const inactive = ['paused', 'stopped', 'archived', 'deleted', 'draft', 'disabled', 'completed', 'finished'];
-        return !inactive.includes(status);
-    });
+    // Use loose truthiness — API returns active:1 (number) not active:true (boolean)
+    const active = allSequences.filter(s => !!s.active);
     return {
         active: active.map(s => ({
             id: s.id,
