@@ -134,15 +134,9 @@ async function fetchActiveSequenceList() {
         await sleep(200);
     }
 
-    // Permissive filter: include everything EXCEPT explicitly inactive
-    const inactive = ['paused', 'stopped', 'archived', 'deleted', 'draft', 'disabled', 'completed', 'finished'];
-
+    // progress === 1 means "active/running" in SalesHandy
     return allSequences
-        .filter(s => {
-            const status = (s.status || s.state || '').toString().toLowerCase();
-            if (inactive.includes(status)) return false;
-            return true;
-        })
+        .filter(s => s.progress === 1)
         .map(s => ({
             id: s.id || s._id || s.sequenceId,
             name: s.name || s.title || s.sequenceName || `Sequence ${s.id}`,
