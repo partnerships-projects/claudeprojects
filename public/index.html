@@ -292,18 +292,20 @@ async function fetchData(forceRefresh) {
     btn.disabled = false;
 }
 
-// ── Step 2: Fetch all stats in parallel (max 2 calls if server times out) ────
+// ── Step 2: Fetch all stats — keep polling until done ────────────────────────
 
 async function fetchStatsInBackground() {
     if (isFetching) return;
     isFetching = true;
 
-    // At most 2 rounds (first gets ~60-70, second gets the rest)
-    for (var round = 0; round < 3; round++) {
+    var MAX_ROUNDS = 20;       // safety cap
+    var PAUSE_BETWEEN = 2000;  // ms between rounds
+
+    for (var round = 0; round < MAX_ROUNDS; round++) {
         try {
             setStatus('info', round === 0
                 ? 'Fetching all sequence stats...'
-                : 'Fetching remaining stats...');
+                : 'Fetching remaining stats (round ' + (round + 1) + ')...');
             var res = await fetch('/api/sequences?fetch=1');
             var data;
             try { data = await res.json(); } catch (_) { throw new Error('Non-JSON response'); }
@@ -324,10 +326,13 @@ async function fetchStatsInBackground() {
                 break;
             }
 
-            // Still pending — show progress, loop will call again
+            // Still pending — show progress
             var total = meta.activeInApi || '?';
             var done = (meta.withStats || 0) + (meta.skippedEmpty || 0);
             setStatus('info', 'Loaded ' + done + '/' + total + '. Fetching remaining...');
+
+            // Brief pause before next round (let rate limits cool off)
+            await new Promise(function(r) { setTimeout(r, PAUSE_BETWEEN); });
 
         } catch (err) {
             setStatus('error', 'Fetch error: ' + err.message);

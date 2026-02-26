@@ -17,7 +17,8 @@ const {
     fetchActiveSequenceList, fetchOneStat,
 } = require('./_lib');
 
-const CONCURRENCY = 20;            // parallel API calls at once
+const CONCURRENCY = 5;             // parallel API calls (keep low to avoid rate limits)
+const RATE_PAUSE = 1000;           // ms pause between chunks
 const WALL_CLOCK_LIMIT = 50000;    // stop fetching after 50s (Vercel limit = 60s)
 const STATS_MAX_AGE = 3600 * 1000; // 1 hour — refetch stats after this
 const REDIS_TTL = 7200;            // 2 hours — Redis key expiry (safety net)
@@ -82,6 +83,7 @@ async function fetchAllStatsParallel(sequences, allStats) {
     let fetched = 0;
     let errors = [];
     let timedOut = false;
+    let rateLimited = [];
 
     // Process in parallel chunks, save after each chunk
     for (let i = 0; i < stale.length; i += CONCURRENCY) {
@@ -100,6 +102,8 @@ async function fetchAllStatsParallel(sequences, allStats) {
                     fetchedAt: now,
                 };
                 fetched++;
+            } else if (r.isRateLimit) {
+                rateLimited.push(stale[i + j]);
             } else {
                 if (errors.length < 5) errors.push({ id: r.id, error: r.error || 'unknown' });
             }
@@ -107,9 +111,34 @@ async function fetchAllStatsParallel(sequences, allStats) {
 
         // Save progress to Redis after each chunk (so timeout doesn't lose work)
         if (KV_URL && fetched > 0) await kvSet('sh:stats', allStats, REDIS_TTL);
+
+        // Pause between chunks to avoid rate limits
+        if (i + CONCURRENCY < stale.length) await sleep(RATE_PAUSE);
     }
 
-    return { fetched, staleCount: stale.length, errorCount: errors.length, errors, timedOut };
+    // Retry rate-limited sequences one at a time with longer pauses
+    if (rateLimited.length > 0 && Date.now() < deadline) {
+        await sleep(3000); // longer pause before retrying
+        for (const seq of rateLimited) {
+            if (Date.now() > deadline) { timedOut = true; break; }
+            const r = await fetchOneStat(seq);
+            if (r.ok) {
+                allStats[r.id] = {
+                    notContacted: r.notContacted,
+                    total: r.total,
+                    contacted: r.contacted,
+                    fetchedAt: now,
+                };
+                fetched++;
+            } else {
+                if (errors.length < 5) errors.push({ id: r.id, error: r.error || 'unknown' });
+            }
+            await sleep(1500); // slow and steady for retries
+        }
+        if (KV_URL && fetched > 0) await kvSet('sh:stats', allStats, REDIS_TTL);
+    }
+
+    return { fetched, staleCount: stale.length, errorCount: errors.length, errors, timedOut, rateLimitRetried: rateLimited.length };
 }
 
 // ── Handler ──────────────────────────────────────────────────────────────────
