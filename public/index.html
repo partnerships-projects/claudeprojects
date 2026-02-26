@@ -250,21 +250,26 @@ async function fetchData(forceRefresh) {
         const hasSequences = data.sequences && data.sequences.length > 0;
         const hasPending = meta.pendingStats > 0;
 
+        var total = meta.activeInApi || '?';
+
         if (!hasSequences && !hasPending) {
             let errMsg = 'No active sequences found.';
             if (meta.activeInApi === 0 && meta.totalInApi > 0) {
                 errMsg = 'Found ' + meta.totalInApi + ' sequences in API but none are active.';
+            } else if (meta.fetchError) {
+                errMsg = 'API error: ' + meta.fetchError + '. Retrying in 30s...';
+                pendingRefreshTimer = setTimeout(function() { fetchData(true); }, 30000);
             } else if (meta.listRateLimited) {
-                errMsg = 'Rate limited by SalesHandy API. Auto-retrying in 15s...';
-                pendingRefreshTimer = setTimeout(function() { fetchData(true); }, 15000);
+                errMsg = 'Rate limited by SalesHandy API. Retrying in 60s...';
+                pendingRefreshTimer = setTimeout(function() { fetchData(true); }, 60000);
             }
             setStatus('error', errMsg);
             return;
         }
 
         if (!hasSequences && hasPending) {
-            setStatus('info', 'Found ' + (meta.activeInApi || '?') + ' active sequences. Loading stats... auto-refreshing in 15s.');
-            pendingRefreshTimer = setTimeout(function() { fetchData(true); }, 15000);
+            setStatus('info', 'Found ' + total + ' active sequences. Loading stats (rate limited by API)... auto-refreshing in 60s.');
+            pendingRefreshTimer = setTimeout(function() { fetchData(true); }, 60000);
             return;
         }
 
@@ -276,12 +281,11 @@ async function fetchData(forceRefresh) {
         document.getElementById('last-updated').textContent = updatedText;
         if (data.warning) {
             setStatus('info', data.warning);
-        } else if (hasPending) {
-            setStatus('info', 'Loaded ' + data.sequences.length + ' sequences. ' + meta.pendingStats + ' more loading — auto-refreshing in 15s...');
-            pendingRefreshTimer = setTimeout(function() { fetchData(true); }, 15000);
-        } else if (meta.statsRateLimited) {
-            setStatus('info', 'Loaded ' + data.sequences.length + ' sequences. Rate limited — auto-retrying in 30s...');
-            pendingRefreshTimer = setTimeout(function() { fetchData(true); }, 30000);
+        } else if (hasPending || meta.statsRateLimited) {
+            var loaded = data.sequences.length;
+            var pending = meta.pendingStats || 0;
+            setStatus('info', 'Loaded ' + loaded + ' of ' + total + ' sequences (' + pending + ' pending — API rate limited). Auto-refreshing in 60s...');
+            pendingRefreshTimer = setTimeout(function() { fetchData(true); }, 60000);
         } else {
             setStatus('success', 'Loaded all ' + data.sequences.length + ' active sequences.');
         }

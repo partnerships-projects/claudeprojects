@@ -1,6 +1,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Vercel Serverless Function — SalesHandy Sequence Data
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// SalesHandy API rate-limits stats requests (~30 per window).
+// Strategy: fetch what we can per call, cache progressively,
+// frontend auto-refreshes every 60s to fill remaining stats.
+// ─────────────────────────────────────────────────────────────────────────────
 
 const https = require('https');
 
@@ -8,10 +13,10 @@ const SALESHANDY_BASE = 'https://leo-open-api-gateway.saleshandy.com';
 const API_KEY = process.env.SALESHANDY_API_KEY || '';
 const THRESHOLD = Number(process.env.THRESHOLD) || 2000;
 
-// Time budget: 50s (10s buffer for Vercel's 60s maxDuration)
-const TIME_BUDGET = 50000;
+const TIME_BUDGET = 50000;   // 50s (10s buffer for Vercel's 60s maxDuration)
 const HTTP_TIMEOUT = 8000;
-const BATCH_SIZE = 10; // concurrent stats requests per batch
+const BATCH_SIZE = 3;        // conservative — SalesHandy rate-limits aggressively
+const BATCH_DELAY = 500;     // ms between batches
 
 // ── In-memory progressive cache (persists on warm instances) ──────────────
 
@@ -21,7 +26,7 @@ let statsCache = {};           // { seqId: { notContacted, total, contacted, fet
 let lastResponse = null;
 let lastResponseAt = 0;
 
-const RESPONSE_CACHE_TTL = 45 * 1000;  // 45s — prevents double-fetching on rapid reload
+const RESPONSE_CACHE_TTL = 30 * 1000;  // 30s
 const SEQ_LIST_TTL = 15 * 60 * 1000;   // 15 min
 const STATS_TTL = 60 * 60 * 1000;      // 1 hour
 
@@ -77,12 +82,9 @@ async function fetchActiveSequenceList(startTime) {
     const allSequences = [];
     let page = 1;
     let rateLimited = false;
-    let rawFirstPage = null;        // diagnostic: raw API response from page 1
-    let sampleRawSequence = null;   // diagnostic: first raw sequence object
+    let fetchError = null;
 
-    let fetchError = null; // diagnostic: capture first error
-
-    while (elapsed() < TIME_BUDGET / 2) { // use at most half the budget for pagination
+    while (elapsed() < TIME_BUDGET / 2) {
         let data;
         try {
             data = await httpsRequest('GET', `/v1/sequences?page=${page}`, null);
@@ -92,16 +94,6 @@ async function fetchActiveSequenceList(startTime) {
             break;
         }
 
-        // Save page 1 response shape for diagnostics
-        if (page === 1) {
-            rawFirstPage = Object.keys(data);
-            if (data.meta) rawFirstPage.push('meta:' + JSON.stringify(data.meta));
-            if (data.pagination) rawFirstPage.push('pagination:' + JSON.stringify(data.pagination));
-            if (data.totalCount !== undefined) rawFirstPage.push('totalCount:' + data.totalCount);
-            if (data.total !== undefined) rawFirstPage.push('total:' + data.total);
-            if (data.count !== undefined) rawFirstPage.push('count:' + data.count);
-        }
-
         const items = Array.isArray(data.payload) ? data.payload
             : Array.isArray(data.data) ? data.data
             : Array.isArray(data.sequences) ? data.sequences
@@ -109,19 +101,12 @@ async function fetchActiveSequenceList(startTime) {
             : Array.isArray(data.results) ? data.results
             : Array.isArray(data) ? data : [];
         if (items.length === 0) break;
-
-        // Save first raw sequence for diagnostics
-        if (!sampleRawSequence && items.length > 0) {
-            sampleRawSequence = items[0];
-        }
-
         allSequences.push(...items);
         if (items.length < 20) break;
         page++;
         await sleep(200);
     }
 
-    // Use loose truthiness — API returns active:1 (number) not active:true (boolean)
     const active = allSequences.filter(s => !!s.active);
     return {
         active: active.map(s => ({
@@ -132,60 +117,24 @@ async function fetchActiveSequenceList(startTime) {
         totalInApi: allSequences.length,
         pagesFetched: page,
         listRateLimited: rateLimited,
-        _diag: {
-            fetchError,
-            rawFirstPageKeys: rawFirstPage,
-            sampleRawSequence: sampleRawSequence ? {
-                id: sampleRawSequence.id,
-                allKeys: Object.keys(sampleRawSequence),
-                active: sampleRawSequence.active,
-                status: sampleRawSequence.status,
-                state: sampleRawSequence.state,
-                isActive: sampleRawSequence.isActive,
-                name: sampleRawSequence.name,
-                title: sampleRawSequence.title,
-            } : null,
-        },
+        fetchError,
     };
 }
 
-// ── Fetch one stat (no retry — just fail fast) ───────────────────────────
-
-let sampleRawStats = null; // diagnostic: first raw stats response
+// ── Fetch one stat ──────────────────────────────────────────────────────
 
 async function fetchOneStat(seq) {
     try {
         const stats = await httpsRequest('POST', '/v1/analytics/stats', { sequenceId: seq.id });
-
-        // Save first raw stats response for diagnostics
-        if (!sampleRawStats) {
-            sampleRawStats = {
-                topKeys: Object.keys(stats),
-                payloadKeys: stats.payload ? Object.keys(stats.payload) : null,
-                dataKeys: stats.data ? Object.keys(stats.data) : null,
-                prospects: stats.payload?.prospects || stats.data?.prospects || stats.prospects || null,
-                raw: JSON.stringify(stats).slice(0, 2000), // first 2KB of raw response
-            };
-        }
-
-        // Try multiple possible response structures
-        const prospects = stats.payload?.prospects?.[0]
-            || stats.data?.prospects?.[0]
-            || stats.prospects?.[0]
-            || null;
-
-        // Try multiple possible field names for "not contacted"
-        const notContacted = prospects
-            ? (Number(prospects.notContacted) || Number(prospects.not_contacted) || Number(prospects.notcontacted) || Number(prospects.uncontacted) || 0)
-            : 0;
-        const total = prospects
-            ? (Number(prospects.total) || Number(prospects.totalProspects) || Number(prospects.total_prospects) || 0)
-            : 0;
-        const contacted = prospects
-            ? (Number(prospects.contacted) || 0)
-            : 0;
-
-        return { id: seq.id, notContacted, total, contacted, ok: true };
+        // Response: { payload: { prospects: [{ total: "N", notContacted: "N", contacted: "N", ... }] } }
+        const p = stats.payload?.prospects?.[0];
+        return {
+            id: seq.id,
+            notContacted: p ? (Number(p.notContacted) || 0) : 0,
+            total: p ? (Number(p.total) || 0) : 0,
+            contacted: p ? (Number(p.contacted) || 0) : 0,
+            ok: true,
+        };
     } catch (err) {
         return { id: seq.id, isRateLimit: !!err.isRateLimit, ok: false };
     }
@@ -207,7 +156,6 @@ async function fetchStatsParallel(activeSequences, startTime) {
     let fetched = 0;
     let rateLimited = false;
 
-    // Process in batches of BATCH_SIZE
     for (let i = 0; i < needStats.length; i += BATCH_SIZE) {
         if (elapsed() > TIME_BUDGET || rateLimited) break;
 
@@ -226,12 +174,10 @@ async function fetchStatsParallel(activeSequences, startTime) {
             } else if (r.isRateLimit) {
                 rateLimited = true;
             }
-            // If failed for other reasons, don't cache — will retry next request
         }
 
-        // Small delay between batches to avoid rate limits
         if (i + BATCH_SIZE < needStats.length && !rateLimited) {
-            await sleep(150);
+            await sleep(BATCH_DELAY);
         }
     }
 
@@ -276,19 +222,17 @@ async function fetchSequencesWithStats() {
     let totalInApi = 0;
     let pagesFetched = 0;
     let listRateLimited = false;
-
-    let listDiag = null;
+    let fetchError = null;
 
     if (cachedSeqList.length > 0 && (now - seqListFetchedAt < SEQ_LIST_TTL)) {
         activeSequences = cachedSeqList;
     } else {
-        sampleRawStats = null; // reset stats diagnostic on fresh list fetch
         const listResult = await fetchActiveSequenceList(startTime);
         activeSequences = listResult.active;
         totalInApi = listResult.totalInApi;
         pagesFetched = listResult.pagesFetched;
         listRateLimited = listResult.listRateLimited;
-        listDiag = listResult._diag;
+        fetchError = listResult.fetchError;
         if (activeSequences.length > 0) {
             cachedSeqList = activeSequences;
             seqListFetchedAt = now;
@@ -304,15 +248,12 @@ async function fetchSequencesWithStats() {
         totalInApi,
         pagesFetched,
         listRateLimited,
+        fetchError,
         statsFetched: statsResult.statsFetched,
         alreadyCached: statsResult.alreadyCached,
         statsRateLimited: statsResult.statsRateLimited,
         pendingStats: pendingCount,
         elapsedMs: elapsed(),
-        _diag: {
-            list: listDiag,
-            sampleRawStats,
-        },
     };
 }
 
@@ -352,7 +293,7 @@ module.exports = async function handler(req, res) {
             }
         }
 
-        // Short response cache — prevents hammering on rapid reload
+        // Short response cache
         const fresh = req.query.fresh === '1';
         if (!fresh && lastResponse && (Date.now() - lastResponseAt < RESPONSE_CACHE_TTL)) {
             res.setHeader('X-Cache', 'HIT');
@@ -376,7 +317,7 @@ module.exports = async function handler(req, res) {
                 pendingStats: result.pendingStats,
                 pagesFetched: result.pagesFetched,
                 elapsedMs: result.elapsedMs,
-                _diag: result._diag,
+                fetchError: result.fetchError,
             },
         };
 
