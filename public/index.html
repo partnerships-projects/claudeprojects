@@ -268,8 +268,8 @@ async function fetchData(forceRefresh) {
         }
 
         if (!hasSequences && hasPending) {
-            setStatus('info', 'Found ' + total + ' active sequences. Loading stats (rate limited by API)... auto-refreshing in 60s.');
-            pendingRefreshTimer = setTimeout(function() { fetchData(true); }, 60000);
+            setStatus('info', 'Found ' + total + ' active sequences. Loading stats... refreshing in 15s.');
+            pendingRefreshTimer = setTimeout(function() { fetchData(true); }, 15000);
             return;
         }
 
@@ -284,8 +284,8 @@ async function fetchData(forceRefresh) {
         } else if (hasPending || meta.statsRateLimited) {
             var loaded = data.sequences.length;
             var pending = meta.pendingStats || 0;
-            setStatus('info', 'Loaded ' + loaded + ' of ' + total + ' sequences (' + pending + ' pending — API rate limited). Auto-refreshing in 60s...');
-            pendingRefreshTimer = setTimeout(function() { fetchData(true); }, 60000);
+            setStatus('info', 'Loaded ' + loaded + ' of ' + total + ' sequences (' + pending + ' pending). Refreshing in 15s...');
+            pendingRefreshTimer = setTimeout(function() { fetchData(true); }, 15000);
         } else {
             setStatus('success', 'Loaded all ' + data.sequences.length + ' active sequences.');
         }

@@ -201,7 +201,7 @@ async function fetchOneStat(seq) {
     }
 }
 
-// ── Fetch stats: fire all at once, cache what succeeds ───────────────────
+// ── Fetch stats: moderate batches, stop on rate limit, return fast ────────
 
 async function fetchStatsParallel(activeSequences) {
     const now = Date.now();
@@ -217,25 +217,36 @@ async function fetchStatsParallel(activeSequences) {
         return { statsFetched: 0, rateLimited: 0, alreadyCached: activeSequences.length, totalNeeded: 0 };
     }
 
-    // Fire ALL requests at once — no batching, no delays.
-    // Some will succeed before rate limit kicks in, the rest fail fast.
-    // Cached results persist; next refresh fills in more.
-    const results = await Promise.all(needStats.map(seq => fetchOneStat(seq)));
-
     let fetched = 0;
     let rateLimited = 0;
-    for (const r of results) {
-        if (r.ok) {
-            statsCache[r.id] = {
-                notContacted: r.notContacted,
-                total: r.total,
-                contacted: r.contacted,
-                fetchedAt: now,
-            };
-            fetched++;
-        } else if (r.isRateLimit) {
-            rateLimited++;
+    const BATCH = 20;  // moderate concurrency — enough to get data, not enough to overwhelm API
+
+    for (let i = 0; i < needStats.length; i += BATCH) {
+        const batch = needStats.slice(i, i + BATCH);
+        const results = await Promise.all(batch.map(seq => fetchOneStat(seq)));
+
+        let batchHadRateLimit = false;
+        for (const r of results) {
+            if (r.ok) {
+                statsCache[r.id] = {
+                    notContacted: r.notContacted,
+                    total: r.total,
+                    contacted: r.contacted,
+                    fetchedAt: now,
+                };
+                fetched++;
+            } else if (r.isRateLimit) {
+                batchHadRateLimit = true;
+                rateLimited++;
+            }
         }
+
+        // On rate limit: STOP immediately, return what we have.
+        // Don't waste time waiting/retrying — next refresh will fill in more.
+        if (batchHadRateLimit) break;
+
+        // Small gap between successful batches to stay under radar
+        if (i + BATCH < needStats.length) await sleep(100);
     }
 
     return {
