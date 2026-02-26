@@ -106,23 +106,43 @@ async function fetchActiveSequenceList() {
     const allSequences = [];
     let page = 1;
 
-    while (page <= 10) {
+    while (page <= 50) {
         let data;
         try {
-            data = await shApi('GET', `/v1/sequences?page=${page}&pageSize=1000`, null);
+            data = await shApi('GET', `/v1/sequences?page=${page}`, null);
         } catch (err) {
             break;
         }
         const items = extractItems(data);
-        if (items.length === 0) break;
+        if (!Array.isArray(items) || items.length === 0) {
+            // Page 1 might return a flat array
+            if (page === 1 && Array.isArray(data) && data.length > 0) {
+                allSequences.push(...data);
+            }
+            break;
+        }
         allSequences.push(...items);
-        if (items.length < 1000) break;
+
+        // Respect totalPages if the API provides it
+        const totalPages = data.totalPages ?? data.total_pages
+            ?? data.meta?.totalPages ?? data.meta?.last_page ?? null;
+        if (totalPages !== null && page >= totalPages) break;
+
+        // Stop if we got fewer items than a typical page (API default ~20-25)
+        if (items.length < 20) break;
         page++;
         await sleep(200);
     }
 
+    // Permissive filter: include everything EXCEPT explicitly inactive
+    const inactive = ['paused', 'stopped', 'archived', 'deleted', 'draft', 'disabled', 'completed', 'finished'];
+
     return allSequences
-        .filter(s => s.progress === 1)
+        .filter(s => {
+            const status = (s.status || s.state || '').toString().toLowerCase();
+            if (inactive.includes(status)) return false;
+            return true;
+        })
         .map(s => ({
             id: s.id || s._id || s.sequenceId,
             name: s.name || s.title || s.sequenceName || `Sequence ${s.id}`,
