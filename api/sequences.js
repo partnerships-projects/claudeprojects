@@ -75,6 +75,64 @@ function httpsRequest(method, urlPath, body) {
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
+// ── Extract items from API response ───────────────────────────────────────
+
+function extractItems(data) {
+    return Array.isArray(data.payload) ? data.payload
+        : Array.isArray(data.data) ? data.data
+        : Array.isArray(data.sequences) ? data.sequences
+        : Array.isArray(data.items) ? data.items
+        : Array.isArray(data.results) ? data.results
+        : Array.isArray(data) ? data : [];
+}
+
+// ── API Discovery: test filter parameters empirically ─────────────────────
+
+async function discoverFilters() {
+    const experiments = [];
+    // Test type=1..5 to find active filter
+    for (let t = 1; t <= 5; t++) {
+        experiments.push({ label: `type=${t}`, path: `/v1/sequences?type=${t}&page=1` });
+    }
+    // Also test unfiltered
+    experiments.push({ label: 'no-filter', path: '/v1/sequences?page=1' });
+
+    const results = {};
+    for (const exp of experiments) {
+        try {
+            const data = await httpsRequest('GET', exp.path, null);
+            const items = extractItems(data);
+            // Capture response metadata (total, pagination info)
+            const meta = {};
+            for (const k of Object.keys(data)) {
+                if (k !== 'payload' && k !== 'data' && k !== 'sequences' && k !== 'items' && k !== 'results') {
+                    meta[k] = data[k];
+                }
+            }
+            // Sample: first item's scalar fields + ALL keys
+            const sample = items[0];
+            const sampleInfo = sample ? {
+                allKeys: Object.keys(sample),
+                scalarFields: {},
+            } : null;
+            if (sample) {
+                for (const k of Object.keys(sample)) {
+                    if (typeof sample[k] !== 'object' || sample[k] === null) {
+                        sampleInfo.scalarFields[k] = sample[k];
+                    } else {
+                        sampleInfo.scalarFields[k] = `[${typeof sample[k]}]`;
+                    }
+                }
+            }
+            results[exp.label] = { count: items.length, meta, sample: sampleInfo };
+        } catch (err) {
+            results[exp.label] = { error: err.message };
+        }
+        await sleep(300);
+    }
+    return results;
+}
+
 // ── Fetch active sequence list ────────────────────────────────────────────
 
 async function fetchActiveSequenceList(startTime) {
@@ -95,12 +153,7 @@ async function fetchActiveSequenceList(startTime) {
             break;
         }
 
-        const items = Array.isArray(data.payload) ? data.payload
-            : Array.isArray(data.data) ? data.data
-            : Array.isArray(data.sequences) ? data.sequences
-            : Array.isArray(data.items) ? data.items
-            : Array.isArray(data.results) ? data.results
-            : Array.isArray(data) ? data : [];
+        const items = extractItems(data);
         if (items.length === 0) break;
         if (page === 1) pageSize = items.length;
         allSequences.push(...items);
@@ -123,12 +176,6 @@ async function fetchActiveSequenceList(startTime) {
     // Filter: use active boolean for now (progress-based filter coming next)
     const active = allSequences.filter(s => !!s.active);
 
-    // Diagnostic: sample sequence scalar fields
-    const sample = allSequences[0];
-    const sampleKeys = sample ? Object.keys(sample).filter(k => typeof sample[k] !== 'object') : [];
-    const sampleScalars = {};
-    for (const k of sampleKeys) sampleScalars[k] = sample[k];
-
     return {
         active: active.map(s => ({
             id: s.id || s._id || s.sequenceId,
@@ -140,7 +187,7 @@ async function fetchActiveSequenceList(startTime) {
         pageSize,
         listRateLimited: rateLimited,
         fetchError,
-        _diag: { sampleScalars, progressCounts, activeTrue, activeFalse },
+        _diag: { progressCounts, activeTrue, activeFalse },
     };
 }
 
@@ -320,6 +367,16 @@ module.exports = async function handler(req, res) {
                 });
             } catch (e) {
                 return res.status(200).json({ _debug: true, error: e.message });
+            }
+        }
+
+        // API Discovery mode: test different filter parameters
+        if (req.query.discover === '1') {
+            try {
+                const results = await discoverFilters();
+                return res.status(200).json({ _discover: true, experiments: results });
+            } catch (e) {
+                return res.status(200).json({ _discover: true, error: e.message });
             }
         }
 
