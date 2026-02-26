@@ -252,7 +252,7 @@ async function fetchData(forceRefresh) {
 
         if (!hasSequences && !hasPending) {
             let errMsg = 'No active sequences found.';
-            if (meta.activeSequences === 0 && meta.totalInApi > 0) {
+            if (meta.activeInApi === 0 && meta.totalInApi > 0) {
                 errMsg = 'Found ' + meta.totalInApi + ' sequences in API but none are active.';
             } else if (meta.listRateLimited) {
                 errMsg = 'Rate limited by SalesHandy API. Auto-retrying in 15s...';
@@ -283,7 +283,7 @@ async function fetchData(forceRefresh) {
             setStatus('info', 'Loaded ' + data.sequences.length + ' sequences. Rate limited — auto-retrying in 30s...');
             pendingRefreshTimer = setTimeout(function() { fetchData(true); }, 30000);
         } else {
-            setStatus('success', 'Loaded ' + data.sequences.length + ' sequences with uncontacted prospects.');
+            setStatus('success', 'Loaded all ' + data.sequences.length + ' active sequences.');
         }
     } catch (err) {
         setStatus('error', 'Error: ' + err.message);

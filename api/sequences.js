@@ -11,7 +11,7 @@ const THRESHOLD = Number(process.env.THRESHOLD) || 2000;
 // Time budget: 50s (10s buffer for Vercel's 60s maxDuration)
 const TIME_BUDGET = 50000;
 const HTTP_TIMEOUT = 8000;
-const BATCH_SIZE = 5; // concurrent stats requests per batch
+const BATCH_SIZE = 10; // concurrent stats requests per batch
 
 // ── In-memory progressive cache (persists on warm instances) ──────────────
 
@@ -166,10 +166,8 @@ async function fetchStatsParallel(activeSequences, startTime) {
                 fetched++;
             } else if (r.isRateLimit) {
                 rateLimited = true;
-            } else {
-                // Failed but not rate limited — cache as 0 so we skip next time
-                statsCache[r.id] = { notContacted: 0, total: 0, contacted: 0, fetchedAt: now };
             }
+            // If failed for other reasons, don't cache — will retry next request
         }
 
         // Small delay between batches to avoid rate limits
