@@ -156,38 +156,35 @@ module.exports = async function handler(req, res) {
     }
 
     try {
-        // ── Fast path: serve from Redis if available ──
+        // ── Fast path: serve from Redis if fully loaded and fresh ──
         if (KV_URL) {
             const cached = await kvGet('sh:response');
             if (cached && cached.sequences) {
                 const age = Date.now() - new Date(cached.lastUpdated).getTime();
-                const isFresh = age < 60 * 1000;  // 1 min — during loading, refresh frequently
+                const hasPending = (cached.pendingStats || 0) > 0;
 
-                // Return cached data immediately (even if sequences is empty — shows progress)
-                res.setHeader('X-Cache', isFresh ? 'HIT' : 'STALE');
-                res.status(200).json({
-                    sequences: cached.sequences,
-                    threshold: THRESHOLD,
-                    lastUpdated: cached.lastUpdated,
-                    _meta: {
-                        source: 'redis',
-                        activeInApi: cached.activeInApi,
-                        withStats: cached.sequences.length,
-                        pendingStats: cached.pendingStats || 0,
-                        skippedEmpty: cached.skippedEmpty || 0,
-                        ageSeconds: Math.round(age / 1000),
-                    },
-                });
-
-                // If stale, trigger background refresh to fetch more stats
-                if (!isFresh && res.waitUntil) {
-                    res.waitUntil(refreshStats().catch(() => {}));
+                // Only use cache when ALL stats are loaded AND data is fresh (< 10 min).
+                // If stats are still pending, fall through to refreshStats() to fetch more.
+                if (!hasPending && age < 10 * 60 * 1000) {
+                    res.setHeader('X-Cache', 'HIT');
+                    return res.status(200).json({
+                        sequences: cached.sequences,
+                        threshold: THRESHOLD,
+                        lastUpdated: cached.lastUpdated,
+                        _meta: {
+                            source: 'redis',
+                            activeInApi: cached.activeInApi,
+                            withStats: cached.sequences.length,
+                            pendingStats: 0,
+                            skippedEmpty: cached.skippedEmpty || 0,
+                            ageSeconds: Math.round(age / 1000),
+                        },
+                    });
                 }
-                return;
             }
         }
 
-        // ── No cache at all: fetch directly (first ever request) ──
+        // ── Fetch next batch of stats (5 at a time) ──
         const result = await refreshStats();
 
         res.setHeader('X-Cache', 'MISS');
