@@ -105,22 +105,24 @@ function extractItems(data) {
 async function fetchActiveSequenceList() {
     const allSequences = [];
     let page = 1;
+    let retries = 0;
 
     while (page <= 50) {
         let data;
         try {
             data = await shApi('GET', `/v1/sequences?page=${page}`, null);
+            retries = 0; // reset on success
         } catch (err) {
-            break;
-        }
-        const items = extractItems(data);
-        if (!Array.isArray(items) || items.length === 0) {
-            // Page 1 might return a flat array
-            if (page === 1 && Array.isArray(data) && data.length > 0) {
-                allSequences.push(...data);
+            // Retry on rate limit (up to 3 times per page)
+            if (err.isRateLimit && retries < 3) {
+                retries++;
+                await sleep(3000 * retries);
+                continue; // retry same page
             }
             break;
         }
+        const items = extractItems(data);
+        if (!Array.isArray(items) || items.length === 0) break;
         allSequences.push(...items);
 
         // Respect totalPages if the API provides it
@@ -128,10 +130,10 @@ async function fetchActiveSequenceList() {
             ?? data.meta?.totalPages ?? data.meta?.last_page ?? null;
         if (totalPages !== null && page >= totalPages) break;
 
-        // Stop if we got fewer items than a typical page (API default ~20-25)
-        if (items.length < 20) break;
+        // API returns 100 per page — stop when we get a partial page
+        if (items.length < 100) break;
         page++;
-        await sleep(200);
+        await sleep(300);
     }
 
     // progress === 1 means "active/running" in SalesHandy

@@ -129,49 +129,46 @@ module.exports = async function handler(req, res) {
         return res.status(200).json({ ok: true, message: 'Cache cleared. Refresh the page.' });
     }
 
-    // ?debug=1 — show raw API data for diagnosing missing sequences
+    // ?debug=1 — single-pass: fetch all pages, show breakdown + filtered result
     if (req.query.debug === '1') {
-        const { shApi, extractItems } = require('./_lib');
+        const { shApi, extractItems, sleep: sl } = require('./_lib');
         const pages = [];
-        let totalRaw = 0;
-        for (let p = 1; p <= 10; p++) {
+        const allRaw = [];
+        let retries = 0;
+        for (let p = 1; p <= 50; p++) {
             try {
                 const data = await shApi('GET', `/v1/sequences?page=${p}`, null);
+                retries = 0;
                 const items = extractItems(data);
-                const topKeys = Object.keys(data);
+                if (!Array.isArray(items) || items.length === 0) break;
+                allRaw.push(...items);
                 pages.push({
                     page: p,
-                    topKeys,
                     itemCount: items.length,
-                    totalPages: data.totalPages ?? data.total_pages ?? data.meta?.totalPages ?? null,
-                    sample: items.length > 0 ? {
-                        keys: Object.keys(items[0]),
-                        progress: items[0].progress,
-                        status: items[0].status,
-                        state: items[0].state,
-                        active: items[0].active,
-                        id: items[0].id,
-                        name: items[0].name,
-                    } : null,
-                    statusBreakdown: items.reduce((acc, s) => {
-                        const key = `progress=${s.progress} status=${s.status} state=${s.state}`;
-                        acc[key] = (acc[key] || 0) + 1;
+                    progressBreakdown: items.reduce((acc, s) => {
+                        acc[`progress=${s.progress}`] = (acc[`progress=${s.progress}`] || 0) + 1;
                         return acc;
                     }, {}),
                 });
-                totalRaw += items.length;
-                if (items.length === 0 || items.length < 20) break;
+                if (items.length < 100) break;
+                await sl(300);
             } catch (err) {
+                if (err.isRateLimit && retries < 3) {
+                    retries++;
+                    await sl(3000 * retries);
+                    p--; // retry same page
+                    continue;
+                }
                 pages.push({ page: p, error: err.message });
                 break;
             }
         }
-        const sequences = await fetchActiveSequenceList();
+        const filtered = allRaw.filter(s => s.progress === 1);
         return res.status(200).json({
-            totalRawFromApi: totalRaw,
-            afterFilter: sequences.length,
+            totalRawFromApi: allRaw.length,
+            withProgress1: filtered.length,
             pages,
-            filteredSequenceIds: sequences.map(s => s.id),
+            filteredNames: filtered.map(s => ({ id: s.id, title: s.title, progress: s.progress })),
         });
     }
 
