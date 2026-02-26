@@ -15,8 +15,10 @@ const THRESHOLD = Number(process.env.THRESHOLD) || 2000;
 
 const TIME_BUDGET = 50000;   // 50s (10s buffer for Vercel's 60s maxDuration)
 const HTTP_TIMEOUT = 8000;
-const BATCH_SIZE = 3;        // conservative — SalesHandy rate-limits aggressively
-const BATCH_DELAY = 500;     // ms between batches
+const BATCH_SIZE = 10;       // fire 10 concurrent stats requests
+const BATCH_DELAY = 150;     // ms between batches (when not rate-limited)
+const RATE_LIMIT_BACKOFF = 3000; // ms to wait after hitting rate limit
+const MAX_RATE_RETRIES = 3;  // keep going after rate limits, don't give up
 
 // ── In-memory progressive cache (persists on warm instances) ──────────────
 
@@ -155,7 +157,7 @@ async function fetchActiveSequenceList(startTime) {
         if (items.length < 1000) break; // pageSize=1000 is API max; fewer = last page
         if (page >= 10) break; // safety cap
         page++;
-        await sleep(500);
+        await sleep(200);
     }
 
     // Diagnostic: count sequences by progress value and active boolean
@@ -219,14 +221,14 @@ async function fetchStatsParallel(activeSequences, startTime) {
     });
 
     let fetched = 0;
-    let rateLimited = false;
+    let rateLimitHits = 0;
 
-    for (let i = 0; i < needStats.length; i += BATCH_SIZE) {
-        if (elapsed() > TIME_BUDGET || rateLimited) break;
-
+    let i = 0;
+    while (i < needStats.length && elapsed() < TIME_BUDGET) {
         const batch = needStats.slice(i, i + BATCH_SIZE);
         const results = await Promise.all(batch.map(seq => fetchOneStat(seq)));
 
+        let batchHadRateLimit = false;
         for (const r of results) {
             if (r.ok) {
                 statsCache[r.id] = {
@@ -237,18 +239,26 @@ async function fetchStatsParallel(activeSequences, startTime) {
                 };
                 fetched++;
             } else if (r.isRateLimit) {
-                rateLimited = true;
+                batchHadRateLimit = true;
             }
         }
 
-        if (i + BATCH_SIZE < needStats.length && !rateLimited) {
+        i += BATCH_SIZE;
+
+        if (batchHadRateLimit) {
+            rateLimitHits++;
+            if (rateLimitHits >= MAX_RATE_RETRIES || elapsed() > TIME_BUDGET) break;
+            // Back off then continue — don't give up
+            await sleep(RATE_LIMIT_BACKOFF);
+        } else if (i < needStats.length) {
             await sleep(BATCH_DELAY);
         }
     }
 
     return {
         statsFetched: fetched,
-        statsRateLimited: rateLimited,
+        statsRateLimited: rateLimitHits > 0,
+        rateLimitHits,
         alreadyCached: activeSequences.length - needStats.length,
         totalNeeded: needStats.length,
     };
