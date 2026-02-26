@@ -259,10 +259,13 @@ async function fetchStatsParallel(activeSequences, startTime) {
 function buildResults(activeSequences) {
     const sequences = [];
     let pendingCount = 0;
+    let skippedEmpty = 0;
 
     for (const seq of activeSequences) {
         const stats = statsCache[seq.id];
         if (!stats) { pendingCount++; continue; }
+        // Skip sequences with 0 not-contacted (empty/deleted/fully processed)
+        if (stats.notContacted < 1) { skippedEmpty++; continue; }
         sequences.push({
             id: seq.id,
             name: seq.name,
@@ -273,7 +276,7 @@ function buildResults(activeSequences) {
         });
     }
 
-    return { sequences, pendingCount };
+    return { sequences, pendingCount, skippedEmpty };
 }
 
 // ── Main orchestrator ─────────────────────────────────────────────────────
@@ -310,7 +313,7 @@ async function fetchSequencesWithStats() {
     }
 
     const statsResult = await fetchStatsParallel(activeSequences, startTime);
-    const { sequences, pendingCount } = buildResults(activeSequences);
+    const { sequences, pendingCount, skippedEmpty } = buildResults(activeSequences);
 
     return {
         sequences,
@@ -324,6 +327,7 @@ async function fetchSequencesWithStats() {
         alreadyCached: statsResult.alreadyCached,
         statsRateLimited: statsResult.statsRateLimited,
         pendingStats: pendingCount,
+        skippedEmpty,
         elapsedMs: elapsed(),
         listDiag,
     };
@@ -406,6 +410,7 @@ module.exports = async function handler(req, res) {
                 listRateLimited: result.listRateLimited,
                 statsRateLimited: result.statsRateLimited,
                 pendingStats: result.pendingStats,
+                skippedEmpty: result.skippedEmpty,
                 pagesFetched: result.pagesFetched,
                 pageSize: result.pageSize,
                 elapsedMs: result.elapsedMs,
