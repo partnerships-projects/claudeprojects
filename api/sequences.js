@@ -244,6 +244,10 @@ module.exports = async function handler(req, res) {
             kvDel(CACHE_KEY),
             kvDel(LOCK_KEY),
             kvDel(LAST_REFRESH_KEY),
+            // Clean up legacy keys from previous cache structure
+            kvDel('sh:sequences'),
+            kvDel('sh:stats'),
+            kvDel('sh:response'),
         ]);
         return res.status(200).json({ ok: true, message: 'Cache cleared. Refresh the page.' });
     }
