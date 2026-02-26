@@ -184,11 +184,9 @@ async function getDashboardData() {
     const cached = await kvGet(CACHE_KEY);
 
     if (!cached) {
-        // No cache — blocking refresh
-        const result = await refreshCache();
-        if (!result.ok) return { data: null, source: 'error', refreshResult: result };
-        const fresh = await kvGet(CACHE_KEY);
-        return { data: fresh, source: 'fresh' };
+        // No cache — don't block (would exceed Vercel 60s limit for 79+ sequences).
+        // Return empty and let the frontend trigger ?refresh=1 separately.
+        return { data: null, source: 'empty', needsRefresh: true };
     }
 
     const age = Date.now() - new Date(cached.last_updated).getTime();
@@ -323,9 +321,13 @@ module.exports = async function handler(req, res) {
         const { data, source, needsRefresh, refreshResult } = await getDashboardData();
 
         if (!data) {
-            return res.status(500).json({
-                error: 'Failed to fetch data from SalesHandy.',
-                detail: refreshResult,
+            // No cache yet — return empty response, frontend will call ?refresh=1
+            return res.status(200).json({
+                sequences: [],
+                threshold: THRESHOLD,
+                lastUpdated: null,
+                lastRefresh: null,
+                _meta: { source, needsRefresh: true, activeSequences: 0 },
             });
         }
 
