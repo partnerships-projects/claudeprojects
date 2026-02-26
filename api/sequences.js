@@ -108,14 +108,22 @@ async function fetchActiveSequenceList(startTime) {
         if (pageSize > 0 && items.length < pageSize) break;
         if (page >= 100) break; // safety cap
         page++;
-        await sleep(100); // fast pagination — rate limit mainly affects stats
+        await sleep(500); // slower pagination to avoid burning rate limit on list
     }
 
-    // Filter: active boolean is the only reliable signal.
-    // (status field is an object with email stats, NOT a string)
+    // Diagnostic: count sequences by progress value and active boolean
+    const progressCounts = {};
+    let activeTrue = 0, activeFalse = 0;
+    for (const s of allSequences) {
+        const p = s.progress !== undefined ? s.progress : 'undefined';
+        progressCounts[p] = (progressCounts[p] || 0) + 1;
+        if (s.active) activeTrue++; else activeFalse++;
+    }
+
+    // Filter: use active boolean for now (progress-based filter coming next)
     const active = allSequences.filter(s => !!s.active);
 
-    // Diagnostic: capture one raw sequence to see all fields
+    // Diagnostic: sample sequence scalar fields
     const sample = allSequences[0];
     const sampleKeys = sample ? Object.keys(sample).filter(k => typeof sample[k] !== 'object') : [];
     const sampleScalars = {};
@@ -132,7 +140,7 @@ async function fetchActiveSequenceList(startTime) {
         pageSize,
         listRateLimited: rateLimited,
         fetchError,
-        _sampleSeq: sampleScalars,
+        _diag: { sampleScalars, progressCounts, activeTrue, activeFalse },
     };
 }
 
@@ -240,7 +248,7 @@ async function fetchSequencesWithStats() {
     let fetchError = null;
 
     let pageSize = 0;
-    let sampleSeq = null;
+    let listDiag = null;
 
     if (cachedSeqList.length > 0 && (now - seqListFetchedAt < SEQ_LIST_TTL)) {
         activeSequences = cachedSeqList;
@@ -252,7 +260,7 @@ async function fetchSequencesWithStats() {
         pageSize = listResult.pageSize;
         listRateLimited = listResult.listRateLimited;
         fetchError = listResult.fetchError;
-        sampleSeq = listResult._sampleSeq;
+        listDiag = listResult._diag;
         if (activeSequences.length > 0) {
             cachedSeqList = activeSequences;
             seqListFetchedAt = now;
@@ -275,7 +283,7 @@ async function fetchSequencesWithStats() {
         statsRateLimited: statsResult.statsRateLimited,
         pendingStats: pendingCount,
         elapsedMs: elapsed(),
-        sampleSeq,
+        listDiag,
     };
 }
 
@@ -350,7 +358,7 @@ module.exports = async function handler(req, res) {
                 pageSize: result.pageSize,
                 elapsedMs: result.elapsedMs,
                 fetchError: result.fetchError,
-                sampleSeq: result.sampleSeq,
+                listDiag: result.listDiag,
             },
         };
 
