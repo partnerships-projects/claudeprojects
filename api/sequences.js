@@ -108,13 +108,17 @@ async function fetchActiveSequenceList(startTime) {
         await sleep(200);
     }
 
-    // Filter to active sequences using status string, NOT the active boolean.
-    // SalesHandy returns active:false even for running sequences in some responses.
-    const INACTIVE = ['paused', 'stopped', 'archived', 'deleted', 'draft', 'disabled', 'completed', 'finished'];
+    // Filter to active sequences: check status string first, fall back to active boolean.
+    // SalesHandy sometimes returns active:false for running sequences, but also
+    // returns no status for many old/deleted sequences — need both signals.
+    const INACTIVE_STATUSES = ['paused', 'stopped', 'archived', 'deleted', 'draft', 'disabled', 'completed', 'finished'];
+    const ACTIVE_STATUSES = ['active', 'running', 'live', 'in_progress', 'inprogress', 'started'];
     const active = allSequences.filter(s => {
         const status = (s.status || s.state || '').toString().toLowerCase();
-        if (INACTIVE.includes(status)) return false;
-        return true; // include if status is active/running/unknown — don't silently drop
+        if (INACTIVE_STATUSES.includes(status)) return false;
+        if (ACTIVE_STATUSES.includes(status)) return true;
+        // No recognizable status — fall back to active boolean
+        return !!s.active;
     });
     return {
         active: active.map(s => ({
