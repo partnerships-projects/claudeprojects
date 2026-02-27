@@ -429,6 +429,62 @@ module.exports = async function handler(req, res) {
         return res.status(200).json({ ok: true, message: 'Cache cleared. Refresh the page.' });
     }
 
+    // ── ?debug=2 — test open-api.saleshandy.com endpoint ──────────────
+    if (req.query.debug === '2') {
+        const ALT_BASE = 'https://open-api.saleshandy.com';
+        const headers = { 'x-api-key': API_KEY, 'Authorization': `Bearer ${API_KEY}` };
+        const results = {};
+        try {
+            const https = require('https');
+            const fetch = (url) => new Promise((resolve, reject) => {
+                const parsed = new URL(url);
+                const opts = {
+                    hostname: parsed.hostname, port: 443,
+                    path: parsed.pathname + parsed.search, method: 'GET',
+                    headers: { 'Content-Type': 'application/json', ...headers },
+                };
+                const r = https.request(opts, (resp) => {
+                    let d = ''; resp.on('data', c => d += c);
+                    resp.on('end', () => resolve({ status: resp.statusCode, body: d }));
+                });
+                r.on('error', e => reject(e));
+                r.setTimeout(10000, () => { r.destroy(); reject(new Error('Timeout')); });
+                r.end();
+            });
+            // Test 1: /v1/sequences?page=1 on alt base
+            const seqRes = await fetch(`${ALT_BASE}/v1/sequences?page=1`);
+            let seqData;
+            try { seqData = JSON.parse(seqRes.body); } catch { seqData = seqRes.body.slice(0, 2000); }
+            const items = extractItems(seqData);
+            const firstItem = Array.isArray(items) && items[0] ? items[0] : null;
+            results.altBase = {
+                url: `${ALT_BASE}/v1/sequences?page=1`,
+                status: seqRes.status,
+                topLevelKeys: seqData && typeof seqData === 'object' ? Object.keys(seqData) : null,
+                totalPages: seqData?.totalPages ?? seqData?.total_pages ?? seqData?.meta?.totalPages ?? null,
+                itemCount: Array.isArray(items) ? items.length : 0,
+                firstItemKeys: firstItem ? Object.keys(firstItem) : null,
+                firstItemSample: firstItem ? JSON.parse(JSON.stringify(firstItem, (k, v) => typeof v === 'string' && v.length > 100 ? v.slice(0, 100) + '...' : v)) : null,
+            };
+            // Test 2: same on current base for comparison
+            const CUR_BASE = 'https://leo-open-api-gateway.saleshandy.com';
+            const curRes = await fetch(`${CUR_BASE}/v1/sequences?page=1`);
+            let curData;
+            try { curData = JSON.parse(curRes.body); } catch { curData = curRes.body.slice(0, 2000); }
+            const curItems = extractItems(curData);
+            const curFirst = Array.isArray(curItems) && curItems[0] ? curItems[0] : null;
+            results.currentBase = {
+                url: `${CUR_BASE}/v1/sequences?page=1`,
+                status: curRes.status,
+                itemCount: Array.isArray(curItems) ? curItems.length : 0,
+                firstItemKeys: curFirst ? Object.keys(curFirst) : null,
+            };
+        } catch (err) {
+            results.error = err.message;
+        }
+        return res.status(200).json(results);
+    }
+
     // ── ?debug=1 — raw pagination debug ─────────────────────────────────
     if (req.query.debug === '1') {
         const pages = [];
