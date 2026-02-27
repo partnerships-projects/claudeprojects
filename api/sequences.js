@@ -65,9 +65,9 @@ async function fetchActiveSequences() {
     if (totalPages === 1) return filterActive(all);
 
     // Fetch remaining pages in small batches (3 at a time) to avoid rate-limiting.
-    // Firing all pages in parallel overwhelms the API — most get 429'd and fail.
     const maxPage = (totalPages && totalPages > 1) ? totalPages : 30;
     const PAGE_BATCH = 3;
+    let consecutiveFailures = 0;
 
     for (let start = 2; start <= maxPage; start += PAGE_BATCH) {
         const batch = [];
@@ -97,8 +97,19 @@ async function fetchActiveSequences() {
             }
         }
 
-        // All pages in this batch were empty or failed — no more data
-        if (!gotItems) break;
+        if (gotItems) {
+            consecutiveFailures = 0;
+        } else if (results.every(d => d !== null)) {
+            // All pages returned OK but with no items — genuinely no more data
+            break;
+        } else {
+            // Some/all pages failed (rate-limited) — retry this batch with backoff
+            consecutiveFailures++;
+            if (consecutiveFailures >= 3) break;
+            await sleep(2000 * consecutiveFailures);
+            start -= PAGE_BATCH; // retry same batch on next loop iteration
+            continue;
+        }
 
         if (start + PAGE_BATCH <= maxPage) await sleep(200);
     }
