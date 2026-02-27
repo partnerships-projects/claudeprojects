@@ -311,13 +311,14 @@ async function triggerRefresh() {
             updateTimestamp(data.lastUpdated, data.lastRefresh);
         }
 
-        // Partial refresh (timed out) — show what we have, auto-retry for the rest
+        // Partial refresh — show what we have, auto-retry for the rest
         if (meta.partial) {
-            var got = meta.fetched || '?';
+            var got = meta.fetched || 0;
             var total = meta.total || '?';
-            setStatus('info', 'Loaded ' + got + '/' + total + ' sequences so far. Fetching remaining...');
+            var remaining = total - got;
+            setStatus('info', 'Loaded counts for ' + got + '/' + total + ' sequences. Fetching remaining ' + remaining + '...');
             isRefreshing = false;
-            await new Promise(function(r) { setTimeout(r, 3000); });
+            await new Promise(function(r) { setTimeout(r, 2000); });
             triggerRefresh();
             return;
         }

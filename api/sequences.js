@@ -194,30 +194,58 @@ async function refreshCache() {
     const deadline = Date.now() + WALL_CLOCK_LIMIT;
 
     try {
-        // 2. Fetch active sequences (SalesHandy is the source of truth)
-        const activeSequences = await fetchActiveSequences();
+        // 2. Read existing cache — enables incremental progress across calls
+        const existingCache = await kvGet(CACHE_KEY);
+        const existingCounts = existingCache?.sequences || {};
+
+        // 3. Fetch active sequences — or reuse cached list if recent (< 2 min)
+        //    Skipping pagination on retries saves 10-15s for count-fetching.
+        let activeSequences;
+        let skippedPagination = false;
+
+        if (existingCache?.last_updated && existingCache?.metadata) {
+            const cacheAge = Date.now() - new Date(existingCache.last_updated).getTime();
+            if (cacheAge < 2 * 60 * 1000 && Object.keys(existingCache.metadata).length > 0) {
+                activeSequences = Object.keys(existingCache.metadata).map(id => ({
+                    id,
+                    name: existingCache.metadata[id]?.name || `Sequence ${id}`,
+                    client: existingCache.metadata[id]?.client || null,
+                    embeddedCount: null,
+                }));
+                skippedPagination = true;
+            }
+        }
+
+        if (!skippedPagination) {
+            activeSequences = await fetchActiveSequences();
+        }
+
         if (activeSequences.length === 0) {
             return { ok: false, reason: 'no_active_sequences' };
         }
 
-        // 3. Separate sequences with/without embedded counts
+        // 4. Build maps — carry over non-null counts from previous cache
         const sequences = {};   // id → not_contacted count
         const metadata = {};    // id → { name, client }
         let pending = [];       // IDs that still need counts
         let embeddedUsed = 0;
+        let carriedOver = 0;
 
         for (const seq of activeSequences) {
             metadata[seq.id] = { name: seq.name, client: seq.client };
             if (seq.embeddedCount !== null) {
                 sequences[seq.id] = seq.embeddedCount;
                 embeddedUsed++;
+            } else if (existingCounts[seq.id] != null) {
+                // Carry over count from previous refresh (non-null only)
+                sequences[seq.id] = existingCounts[seq.id];
+                carriedOver++;
             } else {
                 pending.push(seq.id);
             }
         }
 
-        // 4. Try count strategies in ROUNDS (test first batch, skip if useless)
-        //    Each round makes ONE API call per sequence — fast discovery of what works.
+        // 5. Try count strategies on remaining pending IDs only
         const strategies = [
             { name: 'analytics', fn: tryAnalytics },
             { name: 'detail',    fn: tryDetail },
@@ -233,7 +261,6 @@ async function refreshCache() {
                 pending, strategy.fn, CONCURRENCY, deadline,
             );
 
-            // Merge successes
             let filled = 0;
             for (const [id, count] of Object.entries(counts)) {
                 if (count !== null) {
@@ -242,11 +269,10 @@ async function refreshCache() {
                 }
             }
 
-            if (abandoned) continue; // strategy failed — try next
+            if (abandoned) continue;
 
             if (!winningStrategy && filled > 0) winningStrategy = strategy.name;
 
-            // Remove resolved IDs from pending
             pending = pending.filter(id => sequences[id] === undefined || sequences[id] === null);
 
             if (Date.now() > deadline) { timedOut = true; break; }
@@ -259,9 +285,9 @@ async function refreshCache() {
             errorCount++;
         }
 
-        // 5. Save to Redis (partial on timeout is better than nothing)
-        const fetched = Object.keys(sequences).length;
-        if (fetched > 0) {
+        // 6. Save to Redis (partial is better than nothing)
+        const withCounts = Object.values(sequences).filter(c => c !== null).length;
+        if (Object.keys(sequences).length > 0) {
             const cacheData = {
                 last_updated: new Date().toISOString(),
                 sequences,
@@ -274,14 +300,16 @@ async function refreshCache() {
         return {
             ok: true,
             total: activeSequences.length,
-            fetched,
+            fetched: withCounts,
             errors: errorCount,
-            partial: timedOut,
+            partial: errorCount > 0,
             embeddedUsed,
+            carriedOver,
+            skippedPagination,
             winningStrategy,
         };
     } finally {
-        // 6. Release lock
+        // 7. Release lock
         await kvDel(LOCK_KEY);
     }
 }
