@@ -226,6 +226,24 @@ function setAutoRefresh() {
     }
 }
 
+// ── Poll cache for latest data and render it ────────────────────────────────
+
+async function pollAndRender() {
+    try {
+        var res = await fetch('/api/sequences');
+        var data;
+        try { data = await res.json(); } catch (_) { return null; }
+        if (!res.ok) return null;
+        if (data.threshold) THRESHOLD = data.threshold;
+
+        if (data.sequences && data.sequences.length > 0) {
+            renderResults(data.sequences);
+            updateTimestamp(data.lastUpdated, data.lastRefresh);
+        }
+        return data;
+    } catch (e) { return null; }
+}
+
 // ── Load page: instant read from cache, trigger refresh if stale ────────────
 
 async function loadPage() {
@@ -242,33 +260,22 @@ async function loadPage() {
     }
 
     try {
-        var res = await fetch('/api/sequences');
-        var data;
-        try { data = await res.json(); } catch (_) {
-            throw new Error('Server returned ' + res.status + ' (non-JSON)');
-        }
-        if (!res.ok) throw new Error(data.error || 'Server ' + res.status);
-        if (data.threshold) THRESHOLD = data.threshold;
+        var data = await pollAndRender();
+        if (!data) throw new Error('Failed to load data');
 
         var hasSequences = data.sequences && data.sequences.length > 0;
-
-        if (hasSequences) {
-            renderResults(data.sequences);
-            updateTimestamp(data.lastUpdated, data.lastRefresh);
-        }
-
         var meta = data._meta || {};
 
         if (meta.needsRefresh && !isRefreshing) {
             var withCounts = meta.withCounts || 0;
             var total = meta.activeSequences || 0;
-            var isIncomplete = meta.source === 'incomplete';
-            var statusMsg = hasSequences
-                ? (isIncomplete
-                    ? 'Loaded ' + withCounts + '/' + total + ' counts. Fetching remaining...'
-                    : 'Showing cached data. Refreshing from SalesHandy...')
-                : 'Fetching data from SalesHandy...';
-            setStatus('info', statusMsg);
+            if (hasSequences && total > 0 && withCounts < total) {
+                setStatus('info', 'Loaded ' + withCounts + '/' + total + ' counts. Fetching remaining...');
+            } else if (hasSequences) {
+                setStatus('info', 'Showing cached data. Refreshing from SalesHandy...');
+            } else {
+                setStatus('info', 'Fetching data from SalesHandy...');
+            }
             triggerRefresh();
         } else if (hasSequences) {
             setStatus('success', 'Loaded ' + data.sequences.length + ' active sequences.');
@@ -279,11 +286,11 @@ async function loadPage() {
         setStatus('error', 'Error: ' + err.message);
     } finally {
         document.getElementById('loader').classList.remove('active');
-        btn.disabled = false;
+        if (!isRefreshing) btn.disabled = false;
     }
 }
 
-// ── Trigger full refresh from SalesHandy ────────────────────────────────────
+// ── Trigger refresh: fires request in background, polls cache for live updates
 
 async function triggerRefresh() {
     if (isRefreshing) return;
@@ -292,60 +299,73 @@ async function triggerRefresh() {
     var btn = document.getElementById('btn-refresh');
     btn.disabled = true;
     document.getElementById('loader').classList.add('active');
+    setStatus('info', 'Fetching stats from SalesHandy...');
 
     try {
-        setStatus('info', 'Refreshing all sequence stats from SalesHandy...');
-        var res = await fetch('/api/sequences?refresh=1');
-        var data;
-        try { data = await res.json(); } catch (_) { throw new Error('Non-JSON response'); }
-        if (!res.ok) throw new Error(data.error || 'Server ' + res.status);
+        // Loop: fire refresh, poll while it runs, repeat if partial
+        while (refreshRetries <= 20) {
 
-        var meta = data._meta || {};
-        var hasData = data.sequences && data.sequences.length > 0;
+            // Fire ?refresh=1 in background — don't block on it
+            var refreshDone = false;
+            var refreshData = null;
+            fetch('/api/sequences?refresh=1')
+                .then(function(r) { return r.json(); })
+                .then(function(d) { refreshData = d; })
+                .catch(function() { refreshData = null; })
+                .finally(function() { refreshDone = true; });
 
-        // Locked but got cached data — show it and retry
-        if (meta.source === 'refresh-locked' && hasData) {
-            renderResults(data.sequences);
-            updateTimestamp(data.lastUpdated, data.lastRefresh);
-        }
+            // Poll cache every 3s while refresh runs
+            while (!refreshDone) {
+                await new Promise(function(r) { setTimeout(r, 3000); });
+                if (refreshDone) break;
 
-        // Another refresh is running and no data at all — wait and reload
-        if (data.ok === false && data.message && !hasData) {
-            setStatus('info', data.message);
-            await new Promise(function(r) { setTimeout(r, 8000); });
-            isRefreshing = false;
-            await loadPage();
-            return;
-        }
+                var pollData = await pollAndRender();
+                if (pollData) {
+                    var m = pollData._meta || {};
+                    var total = m.activeSequences || 0;
+                    var withCounts = m.withCounts || 0;
+                    if (total > 0) {
+                        var pct = Math.round(withCounts / total * 100);
+                        setStatus('info', 'Loading stats: ' + withCounts + '/' + total + ' (' + pct + '%)...');
+                    }
+                }
+            }
 
-        if (hasData) {
-            renderResults(data.sequences);
-            updateTimestamp(data.lastUpdated, data.lastRefresh);
-        }
+            // Refresh request completed — render its final response
+            var data = refreshData;
+            if (data && data.sequences && data.sequences.length > 0) {
+                renderResults(data.sequences);
+                updateTimestamp(data.lastUpdated, data.lastRefresh);
+            }
 
-        // Partial refresh — show what we have, auto-retry for the rest
-        if (meta.partial && refreshRetries < 20) {
+            var meta = (data && data._meta) || {};
+
+            // All done?
+            if (!meta.partial) {
+                refreshRetries = 0;
+                var hasData = data && data.sequences && data.sequences.length > 0;
+                setStatus('success', hasData
+                    ? 'Loaded all ' + data.sequences.length + ' sequence stats.'
+                    : 'No active sequences found.');
+                return;
+            }
+
+            // Partial — brief pause then fire another refresh cycle
             refreshRetries++;
             var got = meta.fetched || 0;
             var total = meta.total || '?';
             var pct = total > 0 ? Math.round(got / total * 100) : 0;
-            setStatus('info', 'Loading stats: ' + got + '/' + total + ' (' + pct + '%). Auto-retrying in 15s... (retry ' + refreshRetries + ')');
-            isRefreshing = false;
-            await new Promise(function(r) { setTimeout(r, 15000); });
-            triggerRefresh();
-            return;
+            setStatus('info', 'Loading stats: ' + got + '/' + total + ' (' + pct + '%). Continuing...');
+            await new Promise(function(r) { setTimeout(r, 3000); });
         }
 
-        refreshRetries = 0;
-        if (hasData) {
-            setStatus('success', 'Refreshed! ' + data.sequences.length + ' active sequences loaded.');
-        } else {
-            setStatus('info', 'Refresh complete. No active sequences found.');
-        }
+        // Exhausted retries
+        setStatus('info', 'Stats partially loaded. Click Refresh to continue.');
     } catch (err) {
         setStatus('error', 'Refresh error: ' + err.message);
     } finally {
         isRefreshing = false;
+        refreshRetries = 0;
         document.getElementById('loader').classList.remove('active');
         btn.disabled = false;
     }

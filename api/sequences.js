@@ -168,6 +168,14 @@ async function refreshCache() {
             }
         }
 
+        // Save initial state immediately — frontend can poll and see all sequences
+        // with null counts while stats are being fetched.
+        await kvSet(CACHE_KEY, {
+            last_updated: new Date().toISOString(),
+            sequences: counts,
+            metadata,
+        }, CACHE_TTL);
+
         // Fetch stats for pending IDs: controlled concurrency, batch saves
         const failed = [];
         let newlyFetched = 0;
