@@ -529,10 +529,6 @@ module.exports = async function handler(req, res) {
         };
 
         res.status(200).json(response);
-
-        if (needsRefresh) {
-            refreshCache().catch(() => {});
-        }
     } catch (err) {
         if (KV_URL) {
             try {
