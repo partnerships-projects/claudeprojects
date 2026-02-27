@@ -21,8 +21,8 @@ const LAST_REFRESH_KEY = 'saleshandy:last_refresh';
 // Timing / concurrency
 const HTTP_TIMEOUT = 10000;      // 10s per API call (stats)
 const PAGE_TIMEOUT = 5000;       // 5s for pagination (fast-fail empty pages)
-const CONCURRENCY = 3;           // max 3 parallel stats requests
-const BATCH_DELAY = 300;         // 300ms pause between batches (was 1.5s)
+const CONCURRENCY = 1;           // sequential — avoids rate limit penalties for concurrent requests
+const BATCH_DELAY = 100;         // 100ms between calls (gentle pacing)
 const CACHE_FRESH_MS = 5 * 60 * 1000;  // 5 min — cache considered fresh
 const LOCK_TTL = 55;             // 55s — just under Vercel 60s limit
 const CACHE_TTL = 600;           // 10 min — Redis key safety-net expiry
