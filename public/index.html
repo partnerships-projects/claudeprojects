@@ -314,9 +314,9 @@ async function triggerRefresh() {
                 .catch(function() { refreshData = null; })
                 .finally(function() { refreshDone = true; });
 
-            // Poll cache every 3s while refresh runs
+            // Poll cache every 2s while refresh runs
             while (!refreshDone) {
-                await new Promise(function(r) { setTimeout(r, 3000); });
+                await new Promise(function(r) { setTimeout(r, 2000); });
                 if (refreshDone) break;
 
                 var pollData = await pollAndRender();
@@ -356,7 +356,7 @@ async function triggerRefresh() {
             var total = meta.total || '?';
             var pct = total > 0 ? Math.round(got / total * 100) : 0;
             setStatus('info', 'Loading stats: ' + got + '/' + total + ' (' + pct + '%). Continuing...');
-            await new Promise(function(r) { setTimeout(r, 3000); });
+            await new Promise(function(r) { setTimeout(r, 2000); });
         }
 
         // Exhausted retries

@@ -23,7 +23,7 @@ const {
     API_KEY, THRESHOLD, KV_URL,
     CACHE_KEY, LOCK_KEY, LAST_REFRESH_KEY,
     PAGE_TIMEOUT, CONCURRENCY, BATCH_DELAY,
-    CACHE_FRESH_MS, LOCK_TTL, CACHE_TTL, WALL_CLOCK_LIMIT, MAX_RETRIES,
+    CACHE_FRESH_MS, LOCK_TTL, CACHE_TTL, WALL_CLOCK_LIMIT,
     shApi, sleep,
     kvGet, kvSet, kvDel, kvSetNX,
     extractItems,
@@ -80,29 +80,33 @@ async function fetchActiveSequences() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// fetchStatWithRetry(sequenceId)
+// fetchStat(sequenceId)
 // Fetches not-contacted count for ONE sequence via the analytics endpoint.
-// Retries up to MAX_RETRIES times on 429 or timeout with exponential backoff.
-// Returns the count (number) or null on failure.
+// FAST-FAIL on 429 (rate limit): returns null immediately — no retry.
+// Retrying 429 wastes 6-14s per call on backoff; the rate limit resets on its
+// own. Much faster to skip failures and let the next refresh cycle pick them up.
+// Only retries once on timeout (transient network issue).
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function fetchStatWithRetry(sequenceId) {
-    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-        try {
-            const stats = await shApi('POST', '/v1/analytics/stats', { sequenceId });
-            const p = stats.payload?.prospects?.[0];
-            if (p && p.notContacted != null) return Number(p.notContacted);
-            return null; // API returned OK but no count — don't retry
-        } catch (err) {
-            const retryable = err.isRateLimit || err.message === 'Timeout';
-            if (!retryable || attempt === MAX_RETRIES - 1) return null;
-            // Exponential backoff: 2s, 4s, 8s (with jitter to stagger concurrent retries)
-            const base = 2000 * Math.pow(2, attempt);
-            const jitter = Math.floor(Math.random() * 500);
-            await sleep(base + jitter);
+async function fetchStat(sequenceId) {
+    try {
+        const stats = await shApi('POST', '/v1/analytics/stats', { sequenceId });
+        const p = stats.payload?.prospects?.[0];
+        if (p && p.notContacted != null) return Number(p.notContacted);
+        return null;
+    } catch (err) {
+        // Rate limit: fail fast — don't burn time on backoff
+        if (err.isRateLimit) return null;
+        // Timeout: one retry (transient network glitch)
+        if (err.message === 'Timeout') {
+            try {
+                const stats = await shApi('POST', '/v1/analytics/stats', { sequenceId });
+                const p = stats.payload?.prospects?.[0];
+                if (p && p.notContacted != null) return Number(p.notContacted);
+            } catch { /* give up */ }
         }
+        return null;
     }
-    return null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -176,9 +180,12 @@ async function refreshCache() {
             metadata,
         }, CACHE_TTL);
 
-        // Fetch stats for pending IDs: controlled concurrency, batch saves
+        // Fetch stats for pending IDs: controlled concurrency, periodic saves.
+        // Fast-fail on 429 means each batch completes in ~1s (not ~8s with retries).
+        // With 300ms delay: 80 IDs / 3 per batch = 27 batches × 1.3s = ~35s total.
         const failed = [];
         let newlyFetched = 0;
+        let batchesSinceLastSave = 0;
 
         for (let i = 0; i < pending.length; i += CONCURRENCY) {
             if (Date.now() > deadline) break;
@@ -186,7 +193,7 @@ async function refreshCache() {
             const batch = pending.slice(i, i + CONCURRENCY);
             const results = await Promise.all(
                 batch.map(id =>
-                    fetchStatWithRetry(id).then(count => ({ id, count }))
+                    fetchStat(id).then(count => ({ id, count }))
                 )
             );
 
@@ -199,14 +206,20 @@ async function refreshCache() {
                 }
             }
 
-            // Save progress after each batch (crash-safe: partial > nothing)
-            await kvSet(CACHE_KEY, {
-                last_updated: new Date().toISOString(),
-                sequences: counts,
-                metadata,
-            }, CACHE_TTL);
+            batchesSinceLastSave++;
 
-            // Pause between batches to respect rate limits
+            // Save to Redis every 3 batches (~9 IDs) — keeps polls fresh
+            // while avoiding per-batch Redis overhead (~50ms per write)
+            if (batchesSinceLastSave >= 3 || i + CONCURRENCY >= pending.length) {
+                await kvSet(CACHE_KEY, {
+                    last_updated: new Date().toISOString(),
+                    sequences: counts,
+                    metadata,
+                }, CACHE_TTL);
+                batchesSinceLastSave = 0;
+            }
+
+            // Short pause between batches
             if (i + CONCURRENCY < pending.length && Date.now() < deadline) {
                 await sleep(BATCH_DELAY);
             }
