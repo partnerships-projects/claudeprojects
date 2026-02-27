@@ -369,11 +369,15 @@ async function getDashboardData() {
 
     const age = Date.now() - new Date(cached.last_updated).getTime();
 
-    if (age < CACHE_FRESH_MS) {
+    // Check if any counts are still null (incomplete from partial refresh)
+    const hasNulls = cached.sequences &&
+        Object.values(cached.sequences).some(c => c === null);
+
+    if (age < CACHE_FRESH_MS && !hasNulls) {
         return { data: cached, source: 'cache' };
     }
 
-    return { data: cached, source: 'stale', needsRefresh: true };
+    return { data: cached, source: hasNulls ? 'incomplete' : 'stale', needsRefresh: true };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
