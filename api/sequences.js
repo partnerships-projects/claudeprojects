@@ -127,28 +127,42 @@ async function tryProspects(sequenceId) {
 // ─────────────────────────────────────────────────────────────────────────────
 // runCountRound(ids, fetchFn, concurrency, deadline)
 // Tries one strategy on a batch of IDs. If the first batch yields zero
-// successes, abandons this strategy immediately (saves ~15s per bad strategy).
-// Returns { counts: { id→count }, abandoned: bool }
+// successes AND no rate-limit errors, abandons this strategy (saves time).
+// On rate-limit: stops making calls (saves API budget) but does NOT abandon,
+// so the same strategy is retried on the next incremental call.
+// Returns { counts: { id→count }, abandoned: bool, rateLimited: bool }
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function runCountRound(ids, fetchFn, concurrency, deadline) {
     const counts = {};
     let abandoned = false;
+    let rateLimited = false;
 
     for (let i = 0; i < ids.length; i += concurrency) {
         if (Date.now() > deadline) break;
 
         const chunk = ids.slice(i, i + concurrency);
+        let batchRateLimit = 0;
+
         const results = await Promise.all(chunk.map(async (id) => {
             try { return { id, count: await fetchFn(id) }; }
-            catch { return { id, count: null }; }
+            catch (err) {
+                if (err.isRateLimit) batchRateLimit++;
+                return { id, count: null };
+            }
         }));
 
         for (const r of results) {
             counts[r.id] = r.count;
         }
 
-        // After first batch: if zero successes, this strategy doesn't work — abort
+        // Rate-limited: stop making calls but don't abandon the strategy
+        if (batchRateLimit > 0) {
+            rateLimited = true;
+            break;
+        }
+
+        // First batch, zero successes, no rate-limit → strategy genuinely doesn't work
         if (i === 0) {
             const successes = results.filter(r => r.count !== null).length;
             if (successes === 0) { abandoned = true; break; }
@@ -157,7 +171,7 @@ async function runCountRound(ids, fetchFn, concurrency, deadline) {
         if (i + concurrency < ids.length) await sleep(BATCH_DELAY);
     }
 
-    return { counts, abandoned };
+    return { counts, abandoned, rateLimited };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -242,7 +256,7 @@ async function refreshCache() {
         for (const strategy of strategies) {
             if (pending.length === 0 || Date.now() > deadline) break;
 
-            const { counts, abandoned } = await runCountRound(
+            const { counts, abandoned, rateLimited } = await runCountRound(
                 pending, strategy.fn, CONCURRENCY, deadline,
             );
 
@@ -259,6 +273,10 @@ async function refreshCache() {
             if (!winningStrategy && filled > 0) winningStrategy = strategy.name;
 
             pending = pending.filter(id => sequences[id] === undefined || sequences[id] === null);
+
+            // Rate-limited: stop trying other strategies (they'll fail too).
+            // Save API budget so the rate limit resets sooner for the next call.
+            if (rateLimited) break;
 
             if (Date.now() > deadline) { timedOut = true; break; }
         }
