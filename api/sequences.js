@@ -44,19 +44,16 @@ function extractEmbeddedCount(s) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function fetchActiveSequences() {
-    const all = [];
-
-    // Fetch page 1 to discover total page count
+    // Fetch page 1
     let firstData;
-    for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-            firstData = await shApi('GET', '/v1/sequences?page=1', null);
-            break;
-        } catch (err) {
-            if (err.isRateLimit && attempt < 2) {
-                await sleep((attempt + 1) * 2000);
-                continue;
-            }
+    try {
+        firstData = await shApi('GET', '/v1/sequences?page=1', null);
+    } catch (err) {
+        if (err.isRateLimit) {
+            await sleep(2000);
+            try { firstData = await shApi('GET', '/v1/sequences?page=1', null); }
+            catch { return []; }
+        } else {
             return [];
         }
     }
@@ -64,67 +61,31 @@ async function fetchActiveSequences() {
 
     const firstItems = extractItems(firstData);
     if (!Array.isArray(firstItems) || firstItems.length === 0) return [];
-    all.push(...firstItems);
+    const all = [...firstItems];
 
     const totalPages = firstData.totalPages ?? firstData.total_pages
         ?? firstData.meta?.totalPages ?? firstData.meta?.last_page ?? null;
 
-    // Only stop after page 1 if API explicitly says totalPages is 1
-    if (totalPages === 1) {
-        return filterActive(all);
-    }
+    if (totalPages === 1) return filterActive(all);
 
-    if (totalPages && totalPages > 1) {
-        // Known page count — fetch remaining pages in parallel
-        const remaining = [];
-        for (let p = 2; p <= totalPages; p++) remaining.push(p);
+    // Fetch ALL remaining pages in parallel — no sequential fallback.
+    // If totalPages unknown, assume max 25 pages (~500 sequences at 20/page).
+    const maxPage = (totalPages && totalPages > 1) ? totalPages : 25;
+    const remaining = [];
+    for (let p = 2; p <= maxPage; p++) remaining.push(p);
 
-        for (let i = 0; i < remaining.length; i += 5) {
-            const batch = remaining.slice(i, i + 5);
-            const results = await Promise.all(batch.map(async (p) => {
-                for (let attempt = 0; attempt < 2; attempt++) {
-                    try {
-                        return await shApi('GET', `/v1/sequences?page=${p}`, null);
-                    } catch (err) {
-                        if (err.isRateLimit && attempt === 0) {
-                            await sleep(2000);
-                            continue;
-                        }
-                        return null;
-                    }
-                }
-                return null;
-            }));
+    // Fire pages in batches of 10 (fast — empty pages are harmless)
+    for (let i = 0; i < remaining.length; i += 10) {
+        const batch = remaining.slice(i, i + 10);
+        const results = await Promise.all(batch.map(async (p) => {
+            try { return await shApi('GET', `/v1/sequences?page=${p}`, null); }
+            catch { return null; }
+        }));
 
-            for (const data of results) {
-                if (!data) continue;
-                const items = extractItems(data);
-                if (Array.isArray(items)) all.push(...items);
-            }
-
-            if (i + 5 < remaining.length) await sleep(100);
-        }
-    } else {
-        // Unknown page count — fetch sequentially until empty page
-        for (let p = 2; p <= 50; p++) {
-            let data;
-            try {
-                data = await shApi('GET', `/v1/sequences?page=${p}`, null);
-            } catch (err) {
-                if (err.isRateLimit) {
-                    await sleep(3000);
-                    try { data = await shApi('GET', `/v1/sequences?page=${p}`, null); }
-                    catch { break; }
-                } else {
-                    break;
-                }
-            }
-            if (!data) break;
-
+        for (const data of results) {
+            if (!data) continue;
             const items = extractItems(data);
-            if (!Array.isArray(items) || items.length === 0) break;
-            all.push(...items);
-            await sleep(100);
+            if (Array.isArray(items)) all.push(...items);
         }
     }
 
