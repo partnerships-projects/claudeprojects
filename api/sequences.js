@@ -163,30 +163,38 @@ async function runCountRound(ids, fetchFn, concurrency, deadline) {
         if (Date.now() > deadline) break;
 
         const chunk = ids.slice(i, i + concurrency);
-        let batchRateLimit = 0;
 
         const results = await Promise.all(chunk.map(async (id) => {
-            try { return { id, count: await fetchFn(id) }; }
-            catch (err) {
-                if (err.isRateLimit) batchRateLimit++;
+            try {
+                return { id, count: await fetchFn(id) };
+            } catch (err) {
+                // Retry once on rate-limit (same pattern as pagination)
+                if (err.isRateLimit) {
+                    await sleep(2000);
+                    try { return { id, count: await fetchFn(id) }; }
+                    catch (e2) { return { id, count: null, rl: e2.isRateLimit }; }
+                }
                 return { id, count: null };
             }
         }));
 
+        let batchRateLimit = 0;
         for (const r of results) {
             counts[r.id] = r.count;
-        }
-
-        // Rate-limited: stop making calls but don't abandon the strategy
-        if (batchRateLimit > 0) {
-            rateLimited = true;
-            break;
+            if (r.rl) batchRateLimit++;
         }
 
         // First batch, zero successes, no rate-limit → strategy genuinely doesn't work
         if (i === 0) {
             const successes = results.filter(r => r.count !== null).length;
-            if (successes === 0) { abandoned = true; break; }
+            if (successes === 0 && batchRateLimit === 0) { abandoned = true; break; }
+        }
+
+        // Rate-limited even after retry: stop and save partial progress.
+        // Next refresh (5s later) will carry over these counts and continue.
+        if (batchRateLimit > 0) {
+            rateLimited = true;
+            break;
         }
 
         if (i + concurrency < ids.length) await sleep(BATCH_DELAY);
