@@ -318,9 +318,9 @@ async function triggerRefresh() {
             var got = meta.fetched || 0;
             var total = meta.total || '?';
             var remaining = total - got;
-            setStatus('info', 'Loaded counts for ' + got + '/' + total + ' sequences. Fetching remaining ' + remaining + ' (retry ' + refreshRetries + ')...');
+            setStatus('info', 'Loaded counts for ' + got + '/' + total + ' sequences. Fetching remaining ' + remaining + ' in ~15s (retry ' + refreshRetries + ')...');
             isRefreshing = false;
-            await new Promise(function(r) { setTimeout(r, 5000); });
+            await new Promise(function(r) { setTimeout(r, 15000); });
             triggerRefresh();
             return;
         }

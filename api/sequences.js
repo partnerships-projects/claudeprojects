@@ -64,43 +64,39 @@ async function fetchActiveSequences() {
 
     if (totalPages === 1) return filterActive(all);
 
-    // Fetch remaining pages in small batches (3 at a time) to avoid rate-limiting.
-    // Firing all pages in parallel overwhelms the API — most get 429'd and silently fail.
+    // Fire all pages in parallel (fast), then retry any rate-limited ones.
     const maxPage = (totalPages && totalPages > 1) ? totalPages : 30;
-    const PAGE_BATCH = 3;
+    const pageNums = [];
+    for (let p = 2; p <= maxPage; p++) pageNums.push(p);
 
-    for (let start = 2; start <= maxPage; start += PAGE_BATCH) {
-        const batch = [];
-        for (let p = start; p < start + PAGE_BATCH && p <= maxPage; p++) batch.push(p);
+    const results = await Promise.all(pageNums.map(async (p) => {
+        try { return { page: p, data: await shApi('GET', `/v1/sequences?page=${p}`, null) }; }
+        catch (err) { return { page: p, data: null, rl: !!err.isRateLimit }; }
+    }));
 
-        const results = await Promise.all(batch.map(async (p) => {
-            try {
-                return await shApi('GET', `/v1/sequences?page=${p}`, null);
-            } catch (err) {
-                // Retry once on rate-limit (pagination data is critical)
-                if (err.isRateLimit) {
-                    await sleep(2000);
-                    try { return await shApi('GET', `/v1/sequences?page=${p}`, null); }
-                    catch { return null; }
-                }
-                return null;
+    for (const { data } of results) {
+        if (!data) continue;
+        const items = extractItems(data);
+        if (Array.isArray(items) && items.length > 0) all.push(...items);
+    }
+
+    // Retry rate-limited pages in small batches (they have data we need)
+    const retryPages = results.filter(r => !r.data && r.rl).map(r => r.page);
+    if (retryPages.length > 0) {
+        await sleep(2000);
+        for (let i = 0; i < retryPages.length; i += 3) {
+            const batch = retryPages.slice(i, i + 3);
+            const rr = await Promise.all(batch.map(async (p) => {
+                try { return await shApi('GET', `/v1/sequences?page=${p}`, null); }
+                catch { return null; }
+            }));
+            for (const data of rr) {
+                if (!data) continue;
+                const items = extractItems(data);
+                if (Array.isArray(items) && items.length > 0) all.push(...items);
             }
-        }));
-
-        let gotItems = false;
-        for (const data of results) {
-            if (!data) continue;
-            const items = extractItems(data);
-            if (Array.isArray(items) && items.length > 0) {
-                all.push(...items);
-                gotItems = true;
-            }
+            if (i + 3 < retryPages.length) await sleep(500);
         }
-
-        // All pages in this batch were empty or failed — no more data
-        if (!gotItems) break;
-
-        if (start + PAGE_BATCH <= maxPage) await sleep(200);
     }
 
     return filterActive(all);
@@ -168,13 +164,7 @@ async function runCountRound(ids, fetchFn, concurrency, deadline) {
             try {
                 return { id, count: await fetchFn(id) };
             } catch (err) {
-                // Retry once on rate-limit (same pattern as pagination)
-                if (err.isRateLimit) {
-                    await sleep(2000);
-                    try { return { id, count: await fetchFn(id) }; }
-                    catch (e2) { return { id, count: null, rl: e2.isRateLimit }; }
-                }
-                return { id, count: null };
+                return { id, count: null, rl: !!err.isRateLimit };
             }
         }));
 
@@ -190,8 +180,9 @@ async function runCountRound(ids, fetchFn, concurrency, deadline) {
             if (successes === 0 && batchRateLimit === 0) { abandoned = true; break; }
         }
 
-        // Rate-limited even after retry: stop and save partial progress.
-        // Next refresh (5s later) will carry over these counts and continue.
+        // Rate-limited: stop immediately, save partial progress.
+        // Don't waste time retrying — rate limit needs ~60s to reset.
+        // Frontend will retry after 15s, carrying over what we already have.
         if (batchRateLimit > 0) {
             rateLimited = true;
             break;
