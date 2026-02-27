@@ -313,7 +313,7 @@ async function triggerRefresh() {
         }
 
         // Partial refresh — show what we have, auto-retry for the rest
-        if (meta.partial && refreshRetries < 10) {
+        if (meta.partial && refreshRetries < 15) {
             refreshRetries++;
             var got = meta.fetched || 0;
             var total = meta.total || '?';
