@@ -260,10 +260,15 @@ async function loadPage() {
         var meta = data._meta || {};
 
         if (meta.needsRefresh && !isRefreshing) {
-            // Data is stale — show it immediately, then refresh in background
-            setStatus('info', hasSequences
-                ? 'Showing cached data. Refreshing from SalesHandy...'
-                : 'Fetching data from SalesHandy...');
+            var withCounts = meta.withCounts || 0;
+            var total = meta.activeSequences || 0;
+            var isIncomplete = meta.source === 'incomplete';
+            var statusMsg = hasSequences
+                ? (isIncomplete
+                    ? 'Loaded ' + withCounts + '/' + total + ' counts. Fetching remaining...'
+                    : 'Showing cached data. Refreshing from SalesHandy...')
+                : 'Fetching data from SalesHandy...';
+            setStatus('info', statusMsg);
             triggerRefresh();
         } else if (hasSequences) {
             setStatus('success', 'Loaded ' + data.sequences.length + ' active sequences.');
@@ -295,17 +300,23 @@ async function triggerRefresh() {
         try { data = await res.json(); } catch (_) { throw new Error('Non-JSON response'); }
         if (!res.ok) throw new Error(data.error || 'Server ' + res.status);
 
-        // Another refresh is already running — wait and reload
-        if (data.ok === false && data.message) {
+        var meta = data._meta || {};
+        var hasData = data.sequences && data.sequences.length > 0;
+
+        // Locked but got cached data — show it and retry
+        if (meta.source === 'refresh-locked' && hasData) {
+            renderResults(data.sequences);
+            updateTimestamp(data.lastUpdated, data.lastRefresh);
+        }
+
+        // Another refresh is running and no data at all — wait and reload
+        if (data.ok === false && data.message && !hasData) {
             setStatus('info', data.message);
-            await new Promise(function(r) { setTimeout(r, 10000); });
+            await new Promise(function(r) { setTimeout(r, 8000); });
             isRefreshing = false;
             await loadPage();
             return;
         }
-
-        var meta = data._meta || {};
-        var hasData = data.sequences && data.sequences.length > 0;
 
         if (hasData) {
             renderResults(data.sequences);
@@ -313,12 +324,12 @@ async function triggerRefresh() {
         }
 
         // Partial refresh — show what we have, auto-retry for the rest
-        if (meta.partial && refreshRetries < 15) {
+        if (meta.partial && refreshRetries < 20) {
             refreshRetries++;
             var got = meta.fetched || 0;
             var total = meta.total || '?';
-            var remaining = total - got;
-            setStatus('info', 'Loaded counts for ' + got + '/' + total + ' sequences. Fetching remaining ' + remaining + ' in ~15s (retry ' + refreshRetries + ')...');
+            var pct = total > 0 ? Math.round(got / total * 100) : 0;
+            setStatus('info', 'Loading stats: ' + got + '/' + total + ' (' + pct + '%). Auto-retrying in 15s... (retry ' + refreshRetries + ')');
             isRefreshing = false;
             await new Promise(function(r) { setTimeout(r, 15000); });
             triggerRefresh();

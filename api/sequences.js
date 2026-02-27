@@ -2,62 +2,45 @@
 // Vercel Serverless Function — SalesHandy "Not Contacted" Dashboard
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// Endpoints:
-//   GET /api/sequences            → stale-while-revalidate read from Redis
-//   GET /api/sequences?refresh=1  → synchronous full refresh (called by frontend)
+// Architecture: stale-while-revalidate with incremental stats fetching.
+//
+//   GET /api/sequences            → instant Redis read; flags needsRefresh
+//   GET /api/sequences?refresh=1  → synchronous incremental refresh
 //   GET /api/sequences?reset=1    → clear all Redis keys
 //   GET /api/sequences?debug=1    → raw pagination debug
 //
-// Cache structure (single Redis key "saleshandy:not_contacted:active_sequences"):
-//   { last_updated, sequences: { id: count }, metadata: { id: { name, client } } }
+// Cache (Redis "saleshandy:not_contacted:active_sequences"):
+//   { last_updated, sequences: { id: count|null }, metadata: { id: { name, client } } }
 //
-// Refresh lock ("saleshandy:refresh_lock") prevents concurrent refreshes.
+// Refresh is incremental:
+//   - Carries over already-fetched counts from previous cache.
+//   - Fetches stats only for sequences with null counts.
+//   - Saves progress to Redis after each batch (crash-safe).
+//   - Stops at 50s wall clock; frontend auto-retries for the rest.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const {
     API_KEY, THRESHOLD, KV_URL,
     CACHE_KEY, LOCK_KEY, LAST_REFRESH_KEY,
-    CONCURRENCY, BATCH_DELAY, CACHE_FRESH_MS, LOCK_TTL, CACHE_TTL, WALL_CLOCK_LIMIT,
+    PAGE_TIMEOUT, CONCURRENCY, BATCH_DELAY,
+    CACHE_FRESH_MS, LOCK_TTL, CACHE_TTL, WALL_CLOCK_LIMIT, MAX_RETRIES,
     shApi, sleep,
     kvGet, kvSet, kvDel, kvSetNX,
     extractItems,
 } = require('./_lib');
 
 // ─────────────────────────────────────────────────────────────────────────────
-// extractEmbeddedCount(seq)
-// Try to find a not-contacted count already embedded in the sequence object.
-// ─────────────────────────────────────────────────────────────────────────────
-
-function extractEmbeddedCount(s) {
-    const c = s.notContactedCount ?? s.not_contacted_count
-        ?? s.notContacted ?? s.not_contacted
-        ?? s.prospects?.notContacted ?? s.prospects?.not_contacted
-        ?? s.stats?.notContacted ?? s.stats?.not_contacted
-        ?? s.prospectStats?.notContacted ?? s.prospectStats?.not_contacted;
-    return c !== null && c !== undefined ? Number(c) : null;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // fetchActiveSequences()
-// Fetches ALL sequences from SalesHandy (paginated), returns only active ones
-// (progress === 1). Paginates until no more results — does NOT assume page size.
+// Bulk fetch via paginated /v1/sequences endpoint (fast, not rate-limited).
+// Returns only active sequences (progress === 1).
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function fetchActiveSequences() {
-    const PAGE_TIMEOUT = 3000; // 3s timeout for page fetches (fast fail)
-
-    // Fetch page 1
     let firstData;
     try {
         firstData = await shApi('GET', '/v1/sequences?page=1', null, PAGE_TIMEOUT);
-    } catch (err) {
-        if (err.isRateLimit) {
-            await sleep(2000);
-            try { firstData = await shApi('GET', '/v1/sequences?page=1', null, PAGE_TIMEOUT); }
-            catch { return []; }
-        } else {
-            return [];
-        }
+    } catch {
+        return [];
     }
     if (!firstData) return [];
 
@@ -65,20 +48,12 @@ async function fetchActiveSequences() {
     if (!Array.isArray(firstItems) || firstItems.length === 0) return [];
     const all = [...firstItems];
 
-    const totalPages = firstData.totalPages ?? firstData.total_pages
-        ?? firstData.meta?.totalPages ?? firstData.meta?.last_page ?? null;
+    // Fetch remaining pages in batches of 5; stop on empty batch.
+    for (let start = 2; start <= 30; start += 5) {
+        const pages = [];
+        for (let p = start; p < start + 5 && p <= 30; p++) pages.push(p);
 
-    if (totalPages === 1) return filterActive(all);
-
-    // Fetch remaining pages in parallel batches of 5.
-    // Stop as soon as a batch yields zero items (gone past last page).
-    const maxPage = (totalPages && totalPages > 1) ? totalPages : 30;
-
-    for (let startPage = 2; startPage <= maxPage; startPage += 5) {
-        const batch = [];
-        for (let p = startPage; p < startPage + 5 && p <= maxPage; p++) batch.push(p);
-
-        const results = await Promise.all(batch.map(async (p) => {
+        const results = await Promise.all(pages.map(async (p) => {
             try { return await shApi('GET', `/v1/sequences?page=${p}`, null, PAGE_TIMEOUT); }
             catch { return null; }
         }));
@@ -92,196 +67,160 @@ async function fetchActiveSequences() {
                 batchItems += items.length;
             }
         }
-
-        // No items in this batch → we've passed the last page, stop
         if (batchItems === 0) break;
     }
 
-    return filterActive(all);
-}
-
-function filterActive(items) {
-    return items
+    return all
         .filter(s => s.progress === 1)
         .map(s => ({
             id: s.id || s._id || s.sequenceId,
             name: s.name || s.title || s.sequenceName || `Sequence ${s.id}`,
             client: s.client?.companyName || null,
-            embeddedCount: extractEmbeddedCount(s),
         }));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Count-fetching strategies (one API call each — NO retries here)
+// fetchStatWithRetry(sequenceId)
+// Fetches not-contacted count for ONE sequence via the analytics endpoint.
+// Retries up to MAX_RETRIES times on 429 or timeout with exponential backoff.
+// Returns the count (number) or null on failure.
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function tryAnalytics(sequenceId) {
-    const stats = await shApi('POST', '/v1/analytics/stats', { sequenceId });
-    const p = stats.payload?.prospects?.[0];
-    if (p && p.notContacted !== undefined && p.notContacted !== null) {
-        return Number(p.notContacted);
+async function fetchStatWithRetry(sequenceId) {
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        try {
+            const stats = await shApi('POST', '/v1/analytics/stats', { sequenceId });
+            const p = stats.payload?.prospects?.[0];
+            if (p && p.notContacted != null) return Number(p.notContacted);
+            return null; // API returned OK but no count — don't retry
+        } catch (err) {
+            const retryable = err.isRateLimit || err.message === 'Timeout';
+            if (!retryable || attempt === MAX_RETRIES - 1) return null;
+            // Exponential backoff: 2s, 4s, 8s (with jitter to stagger concurrent retries)
+            const base = 2000 * Math.pow(2, attempt);
+            const jitter = Math.floor(Math.random() * 500);
+            await sleep(base + jitter);
+        }
     }
     return null;
 }
 
-async function tryDetail(sequenceId) {
-    const detail = await shApi('GET', `/v1/sequences/${sequenceId}`, null);
-    const s = detail.payload || detail.data || detail;
-    return extractEmbeddedCount(s);
-}
-
-async function tryProspects(sequenceId) {
-    const data = await shApi('GET',
-        `/v1/sequences/${sequenceId}/prospects?status=NOT_CONTACTED`, null);
-    const total = data.total ?? data.totalCount ?? data.total_count
-        ?? data.meta?.total ?? data.pagination?.total
-        ?? data.payload?.total ?? data.payload?.totalCount;
-    return (total !== null && total !== undefined) ? Number(total) : null;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// runCountRound(ids, fetchFn, concurrency, deadline)
-// Tries one strategy on a batch of IDs. If the first batch yields zero
-// successes, abandons this strategy immediately (saves ~15s per bad strategy).
-// Returns { counts: { id→count }, abandoned: bool }
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function runCountRound(ids, fetchFn, concurrency, deadline) {
-    const counts = {};
-    let abandoned = false;
-
-    for (let i = 0; i < ids.length; i += concurrency) {
-        if (Date.now() > deadline) break;
-
-        const chunk = ids.slice(i, i + concurrency);
-        const results = await Promise.all(chunk.map(async (id) => {
-            try { return { id, count: await fetchFn(id) }; }
-            catch { return { id, count: null }; }
-        }));
-
-        for (const r of results) {
-            counts[r.id] = r.count;
-        }
-
-        // After first batch: if zero successes, this strategy doesn't work — abort
-        if (i === 0) {
-            const successes = results.filter(r => r.count !== null).length;
-            if (successes === 0) { abandoned = true; break; }
-        }
-
-        if (i + concurrency < ids.length) await sleep(BATCH_DELAY);
-    }
-
-    return { counts, abandoned };
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // refreshCache()
-// Full refresh cycle:
-//   1. Acquire Redis lock (prevent concurrent refreshes)
-//   2. Fetch fresh list of active sequences from SalesHandy
-//   3. Use embedded counts where available, fetch the rest in parallel
-//   4. Build a completely new cache object and atomically SET in Redis
-//   5. Update saleshandy:last_refresh timestamp
+// Incremental refresh cycle:
+//   1. Acquire Redis lock (prevents concurrent refreshes)
+//   2. Fetch active sequences (bulk, fast)
+//   3. Carry over non-null counts from previous cache
+//   4. Fetch stats for remaining IDs with controlled concurrency
+//   5. Save progress after each batch (crash-safe)
 //   6. Release lock
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function refreshCache() {
-    // 1. Acquire lock
     const acquired = await kvSetNX(LOCK_KEY, Date.now(), LOCK_TTL);
     if (!acquired) return { ok: false, reason: 'locked' };
 
     const deadline = Date.now() + WALL_CLOCK_LIMIT;
 
     try {
-        // 2. Fetch active sequences (SalesHandy is the source of truth)
-        const activeSequences = await fetchActiveSequences();
+        // Load existing cache for incremental carry-over
+        const existing = await kvGet(CACHE_KEY);
+        const existingCounts = existing?.sequences || {};
+
+        // Fetch active sequences — skip pagination if cache is recent (< 2 min)
+        let activeSequences;
+        let skippedPagination = false;
+
+        if (existing?.last_updated && existing?.metadata) {
+            const age = Date.now() - new Date(existing.last_updated).getTime();
+            if (age < 2 * 60 * 1000 && Object.keys(existing.metadata).length > 0) {
+                activeSequences = Object.keys(existing.metadata).map(id => ({
+                    id,
+                    name: existing.metadata[id]?.name || `Sequence ${id}`,
+                    client: existing.metadata[id]?.client || null,
+                }));
+                skippedPagination = true;
+            }
+        }
+
+        if (!skippedPagination) {
+            activeSequences = await fetchActiveSequences();
+        }
+
         if (activeSequences.length === 0) {
             return { ok: false, reason: 'no_active_sequences' };
         }
 
-        // 3. Separate sequences with/without embedded counts
-        const sequences = {};   // id → not_contacted count
-        const metadata = {};    // id → { name, client }
-        let pending = [];       // IDs that still need counts
-        let embeddedUsed = 0;
+        // Build maps — carry over successful counts, queue the rest
+        const counts = {};
+        const metadata = {};
+        const pending = [];
+        let carriedOver = 0;
 
         for (const seq of activeSequences) {
             metadata[seq.id] = { name: seq.name, client: seq.client };
-            if (seq.embeddedCount !== null) {
-                sequences[seq.id] = seq.embeddedCount;
-                embeddedUsed++;
+            if (existingCounts[seq.id] != null) {
+                counts[seq.id] = existingCounts[seq.id];
+                carriedOver++;
             } else {
+                counts[seq.id] = null;
                 pending.push(seq.id);
             }
         }
 
-        // 4. Try count strategies in ROUNDS (test first batch, skip if useless)
-        //    Each round makes ONE API call per sequence — fast discovery of what works.
-        const strategies = [
-            { name: 'analytics', fn: tryAnalytics },
-            { name: 'detail',    fn: tryDetail },
-            { name: 'prospects', fn: tryProspects },
-        ];
-        let timedOut = false;
-        let winningStrategy = null;
+        // Fetch stats for pending IDs: controlled concurrency, batch saves
+        const failed = [];
+        let newlyFetched = 0;
 
-        for (const strategy of strategies) {
-            if (pending.length === 0 || Date.now() > deadline) break;
+        for (let i = 0; i < pending.length; i += CONCURRENCY) {
+            if (Date.now() > deadline) break;
 
-            const { counts, abandoned } = await runCountRound(
-                pending, strategy.fn, CONCURRENCY, deadline,
+            const batch = pending.slice(i, i + CONCURRENCY);
+            const results = await Promise.all(
+                batch.map(id =>
+                    fetchStatWithRetry(id).then(count => ({ id, count }))
+                )
             );
 
-            // Merge successes
-            let filled = 0;
-            for (const [id, count] of Object.entries(counts)) {
+            for (const { id, count } of results) {
                 if (count !== null) {
-                    sequences[id] = count;
-                    filled++;
+                    counts[id] = count;
+                    newlyFetched++;
+                } else {
+                    failed.push(id);
                 }
             }
 
-            if (abandoned) continue; // strategy failed — try next
-
-            if (!winningStrategy && filled > 0) winningStrategy = strategy.name;
-
-            // Remove resolved IDs from pending
-            pending = pending.filter(id => sequences[id] === undefined || sequences[id] === null);
-
-            if (Date.now() > deadline) { timedOut = true; break; }
-        }
-
-        // Mark remaining as null
-        let errorCount = 0;
-        for (const id of pending) {
-            if (sequences[id] === undefined) sequences[id] = null;
-            errorCount++;
-        }
-
-        // 5. Save to Redis (partial on timeout is better than nothing)
-        const fetched = Object.keys(sequences).length;
-        if (fetched > 0) {
-            const cacheData = {
+            // Save progress after each batch (crash-safe: partial > nothing)
+            await kvSet(CACHE_KEY, {
                 last_updated: new Date().toISOString(),
-                sequences,
+                sequences: counts,
                 metadata,
-            };
-            await kvSet(CACHE_KEY, cacheData, CACHE_TTL);
-            await kvSet(LAST_REFRESH_KEY, new Date().toISOString(), CACHE_TTL);
+            }, CACHE_TTL);
+
+            // Pause between batches to respect rate limits
+            if (i + CONCURRENCY < pending.length && Date.now() < deadline) {
+                await sleep(BATCH_DELAY);
+            }
         }
+
+        // Final timestamp
+        await kvSet(LAST_REFRESH_KEY, new Date().toISOString(), CACHE_TTL);
+
+        const totalWithCounts = Object.values(counts).filter(c => c !== null).length;
 
         return {
             ok: true,
             total: activeSequences.length,
-            fetched,
-            errors: errorCount,
-            partial: timedOut,
-            embeddedUsed,
-            winningStrategy,
+            fetched: totalWithCounts,
+            errors: failed.length,
+            partial: totalWithCounts < activeSequences.length,
+            carriedOver,
+            newlyFetched,
+            skippedPagination,
+            failedSample: failed.slice(0, 5),
         };
     } finally {
-        // 6. Release lock
         await kvDel(LOCK_KEY);
     }
 }
@@ -289,9 +228,10 @@ async function refreshCache() {
 // ─────────────────────────────────────────────────────────────────────────────
 // getDashboardData()
 // Stale-while-revalidate:
-//   - No cache        → return empty, frontend triggers refresh
-//   - Cache < 3 min   → return immediately (fresh)
-//   - Cache > 3 min   → return stale immediately, flag for background refresh
+//   - No cache        → empty, frontend triggers ?refresh=1
+//   - Cache < 5 min   → fresh, return immediately
+//   - Cache has nulls  → incomplete, return + flag needsRefresh
+//   - Cache > 5 min   → stale, return + flag needsRefresh
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function getDashboardData() {
@@ -303,16 +243,22 @@ async function getDashboardData() {
 
     const age = Date.now() - new Date(cached.last_updated).getTime();
 
-    if (age < CACHE_FRESH_MS) {
+    const hasNulls = cached.sequences &&
+        Object.values(cached.sequences).some(c => c === null);
+
+    if (age < CACHE_FRESH_MS && !hasNulls) {
         return { data: cached, source: 'cache' };
     }
 
-    return { data: cached, source: 'stale', needsRefresh: true };
+    return {
+        data: cached,
+        source: hasNulls ? 'incomplete' : 'stale',
+        needsRefresh: true,
+    };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // buildDashboardResponse(cacheData)
-// Transforms the Redis cache structure into the dashboard JSON format.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function buildDashboardResponse(data) {
@@ -352,9 +298,6 @@ module.exports = async function handler(req, res) {
             kvDel(CACHE_KEY),
             kvDel(LOCK_KEY),
             kvDel(LAST_REFRESH_KEY),
-            kvDel('sh:sequences'),
-            kvDel('sh:stats'),
-            kvDel('sh:response'),
         ]);
         return res.status(200).json({ ok: true, message: 'Cache cleared. Refresh the page.' });
     }
@@ -383,7 +326,6 @@ module.exports = async function handler(req, res) {
                     }, {}),
                     sampleKeys: p === 1 && items[0] ? Object.keys(items[0]) : undefined,
                 });
-                // Stop only when API explicitly says no more, or empty result
                 if (tp !== null && p >= tp) break;
                 await sleep(300);
             } catch (err) {
@@ -406,20 +348,38 @@ module.exports = async function handler(req, res) {
         });
     }
 
-    // ── ?refresh=1 — synchronous full refresh ───────────────────────────
+    // ── ?refresh=1 — synchronous incremental refresh ────────────────────
     if (req.query.refresh === '1') {
         const result = await refreshCache();
 
         if (!result.ok) {
             if (result.reason === 'locked') {
+                // Another refresh is running — return current cache
+                const cached = await kvGet(CACHE_KEY);
+                if (cached) {
+                    const totalWithCounts = Object.values(cached.sequences || {}).filter(c => c !== null).length;
+                    const total = Object.keys(cached.sequences || {}).length;
+                    return res.status(200).json({
+                        ...buildDashboardResponse(cached),
+                        lastRefresh: await kvGet(LAST_REFRESH_KEY),
+                        _meta: {
+                            source: 'refresh-locked',
+                            total,
+                            fetched: totalWithCounts,
+                            partial: totalWithCounts < total,
+                            message: 'Refresh in progress. Showing latest cached data.',
+                        },
+                    });
+                }
                 return res.status(200).json({
                     ok: false,
                     message: 'Refresh already in progress. Try again shortly.',
                 });
             }
-            const cached = await kvGet(CACHE_KEY);
             return res.status(200).json({
-                ...(cached ? buildDashboardResponse(cached) : { sequences: [], threshold: THRESHOLD, lastUpdated: null }),
+                sequences: [],
+                threshold: THRESHOLD,
+                lastUpdated: null,
                 _meta: { source: 'refresh-error', ...result },
             });
         }
@@ -433,7 +393,7 @@ module.exports = async function handler(req, res) {
         });
     }
 
-    // ── Default: stale-while-revalidate read ────────────────────────────
+    // ── Default: stale-while-revalidate cache read ──────────────────────
     try {
         const { data, source, needsRefresh } = await getDashboardData();
 
@@ -443,26 +403,23 @@ module.exports = async function handler(req, res) {
                 threshold: THRESHOLD,
                 lastUpdated: null,
                 lastRefresh: null,
-                _meta: { source, needsRefresh: true, activeSequences: 0 },
+                _meta: { source, needsRefresh: true },
             });
         }
 
         const lastRefresh = await kvGet(LAST_REFRESH_KEY);
-        const response = {
+        const totalWithCounts = Object.values(data.sequences || {}).filter(c => c !== null).length;
+
+        return res.status(200).json({
             ...buildDashboardResponse(data),
             lastRefresh,
             _meta: {
                 source,
                 needsRefresh: !!needsRefresh,
                 activeSequences: Object.keys(data.sequences).length,
+                withCounts: totalWithCounts,
             },
-        };
-
-        res.status(200).json(response);
-
-        if (needsRefresh) {
-            refreshCache().catch(() => {});
-        }
+        });
     } catch (err) {
         if (KV_URL) {
             try {

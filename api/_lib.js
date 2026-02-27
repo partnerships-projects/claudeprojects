@@ -19,13 +19,15 @@ const LOCK_KEY = 'saleshandy:refresh_lock';
 const LAST_REFRESH_KEY = 'saleshandy:last_refresh';
 
 // Timing / concurrency
-const HTTP_TIMEOUT = 8000;       // 8s per API call
-const CONCURRENCY = 10;          // max parallel requests to SalesHandy
-const BATCH_DELAY = 100;         // ms pause between batches
-const CACHE_FRESH_MS = 3 * 60 * 1000;  // 3 minutes — data considered fresh
-const LOCK_TTL = 180;            // 3 minutes — refresh lock expiry
-const CACHE_TTL = 3600;          // 1 hour — Redis key safety-net expiry
-const WALL_CLOCK_LIMIT = 50000;  // 50s — stop before Vercel 60s limit
+const HTTP_TIMEOUT = 10000;      // 10s per API call (stats)
+const PAGE_TIMEOUT = 5000;       // 5s for pagination (fast-fail empty pages)
+const CONCURRENCY = 3;           // max 3 parallel stats requests
+const BATCH_DELAY = 1500;        // 1.5s pause between batches
+const CACHE_FRESH_MS = 5 * 60 * 1000;  // 5 min — cache considered fresh
+const LOCK_TTL = 55;             // 55s — just under Vercel 60s limit
+const CACHE_TTL = 600;           // 10 min — Redis key safety-net expiry
+const WALL_CLOCK_LIMIT = 50000;  // 50s — hard stop before Vercel kills us
+const MAX_RETRIES = 3;           // per-call retry on 429 / timeout
 
 // ── Utilities ───────────────────────────────────────────────────────────────
 
@@ -117,9 +119,8 @@ async function kvDel(key) {
     try { await redisCmd(['DEL', key]); } catch {}
 }
 
-// SET NX EX — acquire a lock (returns true if acquired, false if already held)
 async function kvSetNX(key, value, ttlSeconds) {
-    if (!KV_URL) return true; // no Redis = single-instance, always succeed
+    if (!KV_URL) return true;
     try {
         const data = await redisCmd(
             ['SET', key, JSON.stringify(value), 'NX', 'EX', String(ttlSeconds)]
@@ -144,7 +145,8 @@ function extractItems(data) {
 module.exports = {
     API_KEY, THRESHOLD, KV_URL,
     CACHE_KEY, LOCK_KEY, LAST_REFRESH_KEY,
-    CONCURRENCY, BATCH_DELAY, CACHE_FRESH_MS, LOCK_TTL, CACHE_TTL, WALL_CLOCK_LIMIT,
+    HTTP_TIMEOUT, PAGE_TIMEOUT, CONCURRENCY, BATCH_DELAY,
+    CACHE_FRESH_MS, LOCK_TTL, CACHE_TTL, WALL_CLOCK_LIMIT, MAX_RETRIES,
     shApi, sleep,
     kvGet, kvSet, kvDel, kvSetNX,
     extractItems,
