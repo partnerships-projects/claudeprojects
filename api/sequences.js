@@ -143,62 +143,67 @@ function filterActive(items) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// fetchNotContacted(sequenceId)
-// Multi-strategy count fetching with retries. Mirrors server.js approach:
-//   1. POST /v1/analytics/stats
-//   2. GET  /v1/sequences/{id} (detail endpoint — extract embedded count)
-//   3. GET  /v1/sequences/{id}/prospects?status=NOT_CONTACTED (total count)
+// Count-fetching strategies (one API call each — NO retries here)
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function fetchNotContacted(sequenceId) {
-    // Strategy 1: POST /v1/analytics/stats (with retry on rate-limit)
-    for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-            const stats = await shApi('POST', '/v1/analytics/stats', { sequenceId });
-            const p = stats.payload?.prospects?.[0];
-            if (p && p.notContacted !== undefined && p.notContacted !== null) {
-                return Number(p.notContacted);
-            }
-            break; // got a response but no data — move to next strategy
-        } catch (err) {
-            if (err.isRateLimit && attempt === 0) {
-                await sleep(err.retryAfterSec ? err.retryAfterSec * 1000 : 2000);
-                continue;
-            }
-            break;
-        }
+async function tryAnalytics(sequenceId) {
+    const stats = await shApi('POST', '/v1/analytics/stats', { sequenceId });
+    const p = stats.payload?.prospects?.[0];
+    if (p && p.notContacted !== undefined && p.notContacted !== null) {
+        return Number(p.notContacted);
     }
-
-    // Strategy 2: GET /v1/sequences/{id} detail (with retry on rate-limit)
-    for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-            const detail = await shApi('GET', `/v1/sequences/${sequenceId}`, null);
-            const s = detail.payload || detail.data || detail;
-            const count = extractEmbeddedCount(s);
-            if (count !== null) return count;
-            break;
-        } catch (err) {
-            if (err.isRateLimit && attempt === 0) {
-                await sleep(2000);
-                continue;
-            }
-            break;
-        }
-    }
-
-    // Strategy 3: GET /v1/sequences/{id}/prospects?status=... (total count)
-    for (const status of ['NOT_CONTACTED', 'notContacted', 'not_contacted']) {
-        try {
-            const data = await shApi('GET',
-                `/v1/sequences/${sequenceId}/prospects?status=${status}`, null);
-            const total = data.total ?? data.totalCount ?? data.total_count
-                ?? data.meta?.total ?? data.pagination?.total
-                ?? data.payload?.total ?? data.payload?.totalCount;
-            if (total !== null && total !== undefined) return Number(total);
-        } catch {}
-    }
-
     return null;
+}
+
+async function tryDetail(sequenceId) {
+    const detail = await shApi('GET', `/v1/sequences/${sequenceId}`, null);
+    const s = detail.payload || detail.data || detail;
+    return extractEmbeddedCount(s);
+}
+
+async function tryProspects(sequenceId) {
+    const data = await shApi('GET',
+        `/v1/sequences/${sequenceId}/prospects?status=NOT_CONTACTED`, null);
+    const total = data.total ?? data.totalCount ?? data.total_count
+        ?? data.meta?.total ?? data.pagination?.total
+        ?? data.payload?.total ?? data.payload?.totalCount;
+    return (total !== null && total !== undefined) ? Number(total) : null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// runCountRound(ids, fetchFn, concurrency, deadline)
+// Tries one strategy on a batch of IDs. If the first batch yields zero
+// successes, abandons this strategy immediately (saves ~15s per bad strategy).
+// Returns { counts: { id→count }, abandoned: bool }
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function runCountRound(ids, fetchFn, concurrency, deadline) {
+    const counts = {};
+    let abandoned = false;
+
+    for (let i = 0; i < ids.length; i += concurrency) {
+        if (Date.now() > deadline) break;
+
+        const chunk = ids.slice(i, i + concurrency);
+        const results = await Promise.all(chunk.map(async (id) => {
+            try { return { id, count: await fetchFn(id) }; }
+            catch { return { id, count: null }; }
+        }));
+
+        for (const r of results) {
+            counts[r.id] = r.count;
+        }
+
+        // After first batch: if zero successes, this strategy doesn't work — abort
+        if (i === 0) {
+            const successes = results.filter(r => r.count !== null).length;
+            if (successes === 0) { abandoned = true; break; }
+        }
+
+        if (i + concurrency < ids.length) await sleep(BATCH_DELAY);
+    }
+
+    return { counts, abandoned };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -229,7 +234,7 @@ async function refreshCache() {
         // 3. Separate sequences with/without embedded counts
         const sequences = {};   // id → not_contacted count
         const metadata = {};    // id → { name, client }
-        const needsFetch = [];  // sequences that need individual count API calls
+        let pending = [];       // IDs that still need counts
         let embeddedUsed = 0;
 
         for (const seq of activeSequences) {
@@ -238,32 +243,51 @@ async function refreshCache() {
                 sequences[seq.id] = seq.embeddedCount;
                 embeddedUsed++;
             } else {
-                needsFetch.push(seq);
+                pending.push(seq.id);
             }
         }
 
-        // 4. Fetch remaining counts (lower concurrency to avoid rate limits)
-        const COUNT_BATCH = 5;
-        let errorCount = 0;
+        // 4. Try count strategies in ROUNDS (test first batch, skip if useless)
+        //    Each round makes ONE API call per sequence — fast discovery of what works.
+        const strategies = [
+            { name: 'analytics', fn: tryAnalytics },
+            { name: 'detail',    fn: tryDetail },
+            { name: 'prospects', fn: tryProspects },
+        ];
         let timedOut = false;
+        let winningStrategy = null;
 
-        for (let i = 0; i < needsFetch.length; i += COUNT_BATCH) {
+        for (const strategy of strategies) {
+            if (pending.length === 0 || Date.now() > deadline) break;
+
+            const { counts, abandoned } = await runCountRound(
+                pending, strategy.fn, CONCURRENCY, deadline,
+            );
+
+            // Merge successes
+            let filled = 0;
+            for (const [id, count] of Object.entries(counts)) {
+                if (count !== null) {
+                    sequences[id] = count;
+                    filled++;
+                }
+            }
+
+            if (abandoned) continue; // strategy failed — try next
+
+            if (!winningStrategy && filled > 0) winningStrategy = strategy.name;
+
+            // Remove resolved IDs from pending
+            pending = pending.filter(id => sequences[id] === undefined || sequences[id] === null);
+
             if (Date.now() > deadline) { timedOut = true; break; }
+        }
 
-            const chunk = needsFetch.slice(i, i + COUNT_BATCH);
-            const results = await Promise.all(chunk.map(async (seq) => {
-                const count = await fetchNotContacted(seq.id);
-                return { id: seq.id, count };
-            }));
-
-            for (const r of results) {
-                sequences[r.id] = r.count;
-                if (r.count === null) errorCount++;
-            }
-
-            if (i + COUNT_BATCH < needsFetch.length) {
-                await sleep(BATCH_DELAY);
-            }
+        // Mark remaining as null
+        let errorCount = 0;
+        for (const id of pending) {
+            if (sequences[id] === undefined) sequences[id] = null;
+            errorCount++;
         }
 
         // 5. Save to Redis (partial on timeout is better than nothing)
@@ -285,6 +309,7 @@ async function refreshCache() {
             errors: errorCount,
             partial: timedOut,
             embeddedUsed,
+            winningStrategy,
         };
     } finally {
         // 6. Release lock
