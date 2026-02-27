@@ -79,11 +79,11 @@ function httpsRequest(method, url, body, headers = {}, timeout = HTTP_TIMEOUT) {
 
 // ── SalesHandy API helper ───────────────────────────────────────────────────
 
-function shApi(method, path, body) {
+function shApi(method, path, body, timeout) {
     return httpsRequest(method, SALESHANDY_BASE + path, body, {
         'x-api-key': API_KEY,
         'Authorization': `Bearer ${API_KEY}`,
-    });
+    }, timeout);
 }
 
 // ── Upstash Redis helpers (REST API, zero packages) ─────────────────────────
