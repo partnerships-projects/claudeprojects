@@ -24,13 +24,29 @@ const {
 } = require('./_lib');
 
 // ─────────────────────────────────────────────────────────────────────────────
+// extractEmbeddedCount(seq)
+// Try to find a not-contacted count already embedded in the sequence object.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function extractEmbeddedCount(s) {
+    const c = s.notContactedCount ?? s.not_contacted_count
+        ?? s.notContacted ?? s.not_contacted
+        ?? s.prospects?.notContacted ?? s.prospects?.not_contacted
+        ?? s.stats?.notContacted ?? s.stats?.not_contacted
+        ?? s.prospectStats?.notContacted ?? s.prospectStats?.not_contacted;
+    return c !== null && c !== undefined ? Number(c) : null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // fetchActiveSequences()
 // Fetches ALL sequences from SalesHandy (paginated), returns only active ones
-// (progress === 1). SalesHandy is always the source of truth.
+// (progress === 1). Paginates until no more results — does NOT assume page size.
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function fetchActiveSequences() {
-    // 1. Fetch page 1 to get items + discover total page count
+    const all = [];
+
+    // Fetch page 1 to discover total page count
     let firstData;
     for (let attempt = 0; attempt < 3; attempt++) {
         try {
@@ -48,47 +64,68 @@ async function fetchActiveSequences() {
 
     const firstItems = extractItems(firstData);
     if (!Array.isArray(firstItems) || firstItems.length === 0) return [];
-
-    const all = [...firstItems];
+    all.push(...firstItems);
 
     const totalPages = firstData.totalPages ?? firstData.total_pages
         ?? firstData.meta?.totalPages ?? firstData.meta?.last_page ?? null;
 
-    // Single page — done
-    if ((totalPages !== null && totalPages <= 1) || firstItems.length < 100) {
+    // Only stop after page 1 if API explicitly says totalPages is 1
+    if (totalPages === 1) {
         return filterActive(all);
     }
 
-    // 2. Fetch remaining pages in PARALLEL (batches of 5 pages at a time)
-    const lastPage = totalPages || 50;
-    const remaining = [];
-    for (let p = 2; p <= lastPage; p++) remaining.push(p);
+    if (totalPages && totalPages > 1) {
+        // Known page count — fetch remaining pages in parallel
+        const remaining = [];
+        for (let p = 2; p <= totalPages; p++) remaining.push(p);
 
-    for (let i = 0; i < remaining.length; i += 5) {
-        const batch = remaining.slice(i, i + 5);
-        const results = await Promise.all(batch.map(async (p) => {
-            for (let attempt = 0; attempt < 2; attempt++) {
-                try {
-                    return await shApi('GET', `/v1/sequences?page=${p}`, null);
-                } catch (err) {
-                    if (err.isRateLimit && attempt === 0) {
-                        await sleep(2000);
-                        continue;
+        for (let i = 0; i < remaining.length; i += 5) {
+            const batch = remaining.slice(i, i + 5);
+            const results = await Promise.all(batch.map(async (p) => {
+                for (let attempt = 0; attempt < 2; attempt++) {
+                    try {
+                        return await shApi('GET', `/v1/sequences?page=${p}`, null);
+                    } catch (err) {
+                        if (err.isRateLimit && attempt === 0) {
+                            await sleep(2000);
+                            continue;
+                        }
+                        return null;
                     }
-                    return null;
+                }
+                return null;
+            }));
+
+            for (const data of results) {
+                if (!data) continue;
+                const items = extractItems(data);
+                if (Array.isArray(items)) all.push(...items);
+            }
+
+            if (i + 5 < remaining.length) await sleep(100);
+        }
+    } else {
+        // Unknown page count — fetch sequentially until empty page
+        for (let p = 2; p <= 50; p++) {
+            let data;
+            try {
+                data = await shApi('GET', `/v1/sequences?page=${p}`, null);
+            } catch (err) {
+                if (err.isRateLimit) {
+                    await sleep(3000);
+                    try { data = await shApi('GET', `/v1/sequences?page=${p}`, null); }
+                    catch { break; }
+                } else {
+                    break;
                 }
             }
-            return null;
-        }));
+            if (!data) break;
 
-        for (const data of results) {
-            if (!data) continue;
             const items = extractItems(data);
-            if (Array.isArray(items)) all.push(...items);
+            if (!Array.isArray(items) || items.length === 0) break;
+            all.push(...items);
+            await sleep(100);
         }
-
-        // Brief pause between page batches
-        if (i + 5 < remaining.length) await sleep(100);
     }
 
     return filterActive(all);
@@ -101,33 +138,34 @@ function filterActive(items) {
             id: s.id || s._id || s.sequenceId,
             name: s.name || s.title || s.sequenceName || `Sequence ${s.id}`,
             client: s.client?.companyName || null,
+            embeddedCount: extractEmbeddedCount(s),
         }));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // fetchNotContacted(sequenceId)
-// Fetches the "not contacted" count for a single sequence via POST analytics.
-// Retries with exponential backoff on failure; respects Retry-After header.
+// Multi-strategy count fetching — tries analytics first, then detail endpoint.
+// Matches the approach from server.js that is proven to work.
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function fetchNotContacted(sequenceId) {
-    const MAX_RETRIES = 2;
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-        try {
-            const stats = await shApi('POST', '/v1/analytics/stats', { sequenceId });
-            const p = stats.payload?.prospects?.[0];
-            if (!p) return null;
-            return Number(p.notContacted) || 0;
-        } catch (err) {
-            if (attempt >= MAX_RETRIES) return null;
-            if (err.isRateLimit) {
-                const wait = err.retryAfterSec || (attempt + 1) * 2;
-                await sleep(wait * 1000);
-            } else {
-                await sleep((attempt + 1) * 1000);
-            }
+    // Strategy 1: POST /v1/analytics/stats
+    try {
+        const stats = await shApi('POST', '/v1/analytics/stats', { sequenceId });
+        const p = stats.payload?.prospects?.[0];
+        if (p && (p.notContacted !== undefined && p.notContacted !== null)) {
+            return Number(p.notContacted);
         }
-    }
+    } catch {}
+
+    // Strategy 2: GET /v1/sequences/{id} detail endpoint (proven in server.js)
+    try {
+        const detail = await shApi('GET', `/v1/sequences/${sequenceId}`, null);
+        const s = detail.payload || detail.data || detail;
+        const count = extractEmbeddedCount(s);
+        if (count !== null) return count;
+    } catch {}
+
     return null;
 }
 
@@ -136,7 +174,7 @@ async function fetchNotContacted(sequenceId) {
 // Full refresh cycle:
 //   1. Acquire Redis lock (prevent concurrent refreshes)
 //   2. Fetch fresh list of active sequences from SalesHandy
-//   3. Fetch not_contacted count for each (controlled concurrency, max 5)
+//   3. Use embedded counts where available, fetch the rest in parallel
 //   4. Build a completely new cache object and atomically SET in Redis
 //   5. Update saleshandy:last_refresh timestamp
 //   6. Release lock
@@ -156,34 +194,46 @@ async function refreshCache() {
             return { ok: false, reason: 'no_active_sequences' };
         }
 
-        // 3. Fetch counts with controlled concurrency
+        // 3. Separate sequences with/without embedded counts
         const sequences = {};   // id → not_contacted count
         const metadata = {};    // id → { name, client }
+        const needsFetch = [];  // sequences that need individual count API calls
+        let embeddedUsed = 0;
+
+        for (const seq of activeSequences) {
+            metadata[seq.id] = { name: seq.name, client: seq.client };
+            if (seq.embeddedCount !== null) {
+                sequences[seq.id] = seq.embeddedCount;
+                embeddedUsed++;
+            } else {
+                needsFetch.push(seq);
+            }
+        }
+
+        // 4. Fetch remaining counts with controlled concurrency
         let errorCount = 0;
         let timedOut = false;
 
-        for (let i = 0; i < activeSequences.length; i += CONCURRENCY) {
+        for (let i = 0; i < needsFetch.length; i += CONCURRENCY) {
             if (Date.now() > deadline) { timedOut = true; break; }
 
-            const chunk = activeSequences.slice(i, i + CONCURRENCY);
+            const chunk = needsFetch.slice(i, i + CONCURRENCY);
             const results = await Promise.all(chunk.map(async (seq) => {
                 const count = await fetchNotContacted(seq.id);
-                return { id: seq.id, name: seq.name, client: seq.client, count };
+                return { id: seq.id, count };
             }));
 
             for (const r of results) {
                 sequences[r.id] = r.count;
-                metadata[r.id] = { name: r.name, client: r.client };
                 if (r.count === null) errorCount++;
             }
 
-            // 200-300ms pause between batches to reduce API pressure
-            if (i + CONCURRENCY < activeSequences.length) {
+            if (i + CONCURRENCY < needsFetch.length) {
                 await sleep(BATCH_DELAY);
             }
         }
 
-        // 4. Save whatever we have (partial on timeout is better than nothing)
+        // 5. Save to Redis (partial on timeout is better than nothing)
         const fetched = Object.keys(sequences).length;
         if (fetched > 0) {
             const cacheData = {
@@ -192,8 +242,6 @@ async function refreshCache() {
                 metadata,
             };
             await kvSet(CACHE_KEY, cacheData, CACHE_TTL);
-
-            // 5. Update last_refresh timestamp
             await kvSet(LAST_REFRESH_KEY, new Date().toISOString(), CACHE_TTL);
         }
 
@@ -203,6 +251,7 @@ async function refreshCache() {
             fetched,
             errors: errorCount,
             partial: timedOut,
+            embeddedUsed,
         };
     } finally {
         // 6. Release lock
@@ -213,7 +262,7 @@ async function refreshCache() {
 // ─────────────────────────────────────────────────────────────────────────────
 // getDashboardData()
 // Stale-while-revalidate:
-//   - No cache        → blocking fetch, store, return fresh data
+//   - No cache        → return empty, frontend triggers refresh
 //   - Cache < 3 min   → return immediately (fresh)
 //   - Cache > 3 min   → return stale immediately, flag for background refresh
 // ─────────────────────────────────────────────────────────────────────────────
@@ -222,19 +271,15 @@ async function getDashboardData() {
     const cached = await kvGet(CACHE_KEY);
 
     if (!cached) {
-        // No cache — don't block (would exceed Vercel 60s limit for 79+ sequences).
-        // Return empty and let the frontend trigger ?refresh=1 separately.
         return { data: null, source: 'empty', needsRefresh: true };
     }
 
     const age = Date.now() - new Date(cached.last_updated).getTime();
 
     if (age < CACHE_FRESH_MS) {
-        // Fresh — return immediately
         return { data: cached, source: 'cache' };
     }
 
-    // Stale — return immediately, flag for background refresh
     return { data: cached, source: 'stale', needsRefresh: true };
 }
 
@@ -280,7 +325,6 @@ module.exports = async function handler(req, res) {
             kvDel(CACHE_KEY),
             kvDel(LOCK_KEY),
             kvDel(LAST_REFRESH_KEY),
-            // Clean up legacy keys from previous cache structure
             kvDel('sh:sequences'),
             kvDel('sh:stats'),
             kvDel('sh:response'),
@@ -300,15 +344,20 @@ module.exports = async function handler(req, res) {
                 const items = extractItems(data);
                 if (!Array.isArray(items) || items.length === 0) break;
                 allRaw.push(...items);
+                const tp = data.totalPages ?? data.total_pages
+                    ?? data.meta?.totalPages ?? data.meta?.last_page ?? null;
                 pages.push({
                     page: p,
                     itemCount: items.length,
+                    totalPagesFromApi: tp,
                     progressBreakdown: items.reduce((acc, s) => {
                         acc[`progress=${s.progress}`] = (acc[`progress=${s.progress}`] || 0) + 1;
                         return acc;
                     }, {}),
+                    sampleKeys: p === 1 && items[0] ? Object.keys(items[0]) : undefined,
                 });
-                if (items.length < 100) break;
+                // Stop only when API explicitly says no more, or empty result
+                if (tp !== null && p >= tp) break;
                 await sleep(300);
             } catch (err) {
                 if (err.isRateLimit && retries < 3) {
@@ -341,7 +390,6 @@ module.exports = async function handler(req, res) {
                     message: 'Refresh already in progress. Try again shortly.',
                 });
             }
-            // no_active_sequences or other error — return whatever is in cache
             const cached = await kvGet(CACHE_KEY);
             return res.status(200).json({
                 ...(cached ? buildDashboardResponse(cached) : { sequences: [], threshold: THRESHOLD, lastUpdated: null }),
@@ -349,7 +397,6 @@ module.exports = async function handler(req, res) {
             });
         }
 
-        // Return data after refresh (may be partial if timed out)
         const fresh = await kvGet(CACHE_KEY);
         const lastRefresh = await kvGet(LAST_REFRESH_KEY);
         return res.status(200).json({
@@ -361,10 +408,9 @@ module.exports = async function handler(req, res) {
 
     // ── Default: stale-while-revalidate read ────────────────────────────
     try {
-        const { data, source, needsRefresh, refreshResult } = await getDashboardData();
+        const { data, source, needsRefresh } = await getDashboardData();
 
         if (!data) {
-            // No cache yet — return empty response, frontend will call ?refresh=1
             return res.status(200).json({
                 sequences: [],
                 threshold: THRESHOLD,
@@ -387,13 +433,10 @@ module.exports = async function handler(req, res) {
 
         res.status(200).json(response);
 
-        // Best-effort background refresh after responding (serverless may kill this)
-        // The frontend also calls ?refresh=1 for reliability
         if (needsRefresh) {
             refreshCache().catch(() => {});
         }
     } catch (err) {
-        // Try to serve stale data on error
         if (KV_URL) {
             try {
                 const stale = await kvGet(CACHE_KEY);
