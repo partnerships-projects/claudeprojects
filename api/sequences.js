@@ -125,45 +125,39 @@ async function tryProspects(sequenceId) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// fetchCountsBatched(ids, sequences, deadline)
-// Fetches "not contacted" counts via analytics API in small batches.
-// Handles rate limiting with backoff instead of abandoning.
+// runCountRound(ids, fetchFn, concurrency, deadline)
+// Tries one strategy on a batch of IDs. If the first batch yields zero
+// successes, abandons this strategy immediately (saves ~15s per bad strategy).
+// Returns { counts: { id→count }, abandoned: bool }
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function fetchCountsBatched(ids, sequences, deadline) {
-    const BATCH = 5; // smaller batches to avoid rate limits
-    let timedOut = false;
+async function runCountRound(ids, fetchFn, concurrency, deadline) {
+    const counts = {};
+    let abandoned = false;
 
-    for (let i = 0; i < ids.length; i += BATCH) {
-        if (Date.now() > deadline) { timedOut = true; break; }
+    for (let i = 0; i < ids.length; i += concurrency) {
+        if (Date.now() > deadline) break;
 
-        const chunk = ids.slice(i, i + BATCH);
-        let rateLimitHit = false;
-
+        const chunk = ids.slice(i, i + concurrency);
         const results = await Promise.all(chunk.map(async (id) => {
-            try {
-                return { id, count: await tryAnalytics(id) };
-            } catch (err) {
-                if (err.isRateLimit) rateLimitHit = true;
-                return { id, count: null };
-            }
+            try { return { id, count: await fetchFn(id) }; }
+            catch { return { id, count: null }; }
         }));
 
         for (const r of results) {
-            if (r.count !== null) sequences[r.id] = r.count;
+            counts[r.id] = r.count;
         }
 
-        if (rateLimitHit) {
-            // Wait for rate limit to reset, then keep going
-            const wait = Math.min(10000, deadline - Date.now() - 5000);
-            if (wait > 0) await sleep(wait);
-            else { timedOut = true; break; }
-        } else if (i + BATCH < ids.length) {
-            await sleep(300); // gentle delay between batches
+        // After first batch: if zero successes, this strategy doesn't work — abort
+        if (i === 0) {
+            const successes = results.filter(r => r.count !== null).length;
+            if (successes === 0) { abandoned = true; break; }
         }
+
+        if (i + concurrency < ids.length) await sleep(BATCH_DELAY);
     }
 
-    return timedOut;
+    return { counts, abandoned };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -236,16 +230,38 @@ async function refreshCache() {
             }
         }
 
-        // 5. Fetch counts for pending IDs using analytics API
-        //    Uses small batches (5) with rate limit detection + backoff.
+        // 5. Try count strategies on remaining pending IDs only
+        const strategies = [
+            { name: 'analytics', fn: tryAnalytics },
+            { name: 'detail',    fn: tryDetail },
+            { name: 'prospects', fn: tryProspects },
+        ];
         let timedOut = false;
+        let winningStrategy = null;
 
-        if (pending.length > 0 && Date.now() < deadline) {
-            timedOut = await fetchCountsBatched(pending, sequences, deadline);
+        for (const strategy of strategies) {
+            if (pending.length === 0 || Date.now() > deadline) break;
+
+            const { counts, abandoned } = await runCountRound(
+                pending, strategy.fn, CONCURRENCY, deadline,
+            );
+
+            let filled = 0;
+            for (const [id, count] of Object.entries(counts)) {
+                if (count !== null) {
+                    sequences[id] = count;
+                    filled++;
+                }
+            }
+
+            if (abandoned) continue;
+
+            if (!winningStrategy && filled > 0) winningStrategy = strategy.name;
+
+            pending = pending.filter(id => sequences[id] === undefined || sequences[id] === null);
+
+            if (Date.now() > deadline) { timedOut = true; break; }
         }
-
-        // Update pending — remove any that got counts
-        pending = pending.filter(id => sequences[id] === undefined || sequences[id] === null);
 
         // Mark remaining as null
         let errorCount = 0;
@@ -275,6 +291,7 @@ async function refreshCache() {
             embeddedUsed,
             carriedOver,
             skippedPagination,
+            winningStrategy,
         };
     } finally {
         // 7. Release lock

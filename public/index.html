@@ -191,7 +191,6 @@
 var THRESHOLD = 2000;
 var refreshTimer = null;
 var isRefreshing = false;
-var refreshRetries = 0;
 
 function setStatus(type, msg) {
     var bar = document.getElementById('status-bar');
@@ -313,19 +312,17 @@ async function triggerRefresh() {
         }
 
         // Partial refresh — show what we have, auto-retry for the rest
-        if (meta.partial && refreshRetries < 5) {
-            refreshRetries++;
+        if (meta.partial) {
             var got = meta.fetched || 0;
             var total = meta.total || '?';
             var remaining = total - got;
-            setStatus('info', 'Loaded counts for ' + got + '/' + total + ' sequences. Fetching remaining ' + remaining + ' (attempt ' + refreshRetries + '/5)...');
+            setStatus('info', 'Loaded counts for ' + got + '/' + total + ' sequences. Fetching remaining ' + remaining + '...');
             isRefreshing = false;
-            await new Promise(function(r) { setTimeout(r, 10000); });
+            await new Promise(function(r) { setTimeout(r, 2000); });
             triggerRefresh();
             return;
         }
 
-        refreshRetries = 0;
         if (hasData) {
             setStatus('success', 'Refreshed! ' + data.sequences.length + ' active sequences loaded.');
         } else {
