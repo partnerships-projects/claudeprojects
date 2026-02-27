@@ -64,22 +64,43 @@ async function fetchActiveSequences() {
 
     if (totalPages === 1) return filterActive(all);
 
-    // Fetch remaining pages in parallel (all at once if totalPages is known).
+    // Fetch remaining pages in small batches (3 at a time) to avoid rate-limiting.
+    // Firing all pages in parallel overwhelms the API — most get 429'd and silently fail.
     const maxPage = (totalPages && totalPages > 1) ? totalPages : 30;
-    const pageNums = [];
-    for (let p = 2; p <= maxPage; p++) pageNums.push(p);
+    const PAGE_BATCH = 3;
 
-    const results = await Promise.all(pageNums.map(async (p) => {
-        try { return await shApi('GET', `/v1/sequences?page=${p}`, null); }
-        catch { return null; }
-    }));
+    for (let start = 2; start <= maxPage; start += PAGE_BATCH) {
+        const batch = [];
+        for (let p = start; p < start + PAGE_BATCH && p <= maxPage; p++) batch.push(p);
 
-    for (const data of results) {
-        if (!data) continue;
-        const items = extractItems(data);
-        if (Array.isArray(items) && items.length > 0) {
-            all.push(...items);
+        const results = await Promise.all(batch.map(async (p) => {
+            try {
+                return await shApi('GET', `/v1/sequences?page=${p}`, null);
+            } catch (err) {
+                // Retry once on rate-limit (pagination data is critical)
+                if (err.isRateLimit) {
+                    await sleep(2000);
+                    try { return await shApi('GET', `/v1/sequences?page=${p}`, null); }
+                    catch { return null; }
+                }
+                return null;
+            }
+        }));
+
+        let gotItems = false;
+        for (const data of results) {
+            if (!data) continue;
+            const items = extractItems(data);
+            if (Array.isArray(items) && items.length > 0) {
+                all.push(...items);
+                gotItems = true;
+            }
         }
+
+        // All pages in this batch were empty or failed — no more data
+        if (!gotItems) break;
+
+        if (start + PAGE_BATCH <= maxPage) await sleep(200);
     }
 
     return filterActive(all);
