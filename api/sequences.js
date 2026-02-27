@@ -144,27 +144,59 @@ function filterActive(items) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // fetchNotContacted(sequenceId)
-// Multi-strategy count fetching — tries analytics first, then detail endpoint.
-// Matches the approach from server.js that is proven to work.
+// Multi-strategy count fetching with retries. Mirrors server.js approach:
+//   1. POST /v1/analytics/stats
+//   2. GET  /v1/sequences/{id} (detail endpoint — extract embedded count)
+//   3. GET  /v1/sequences/{id}/prospects?status=NOT_CONTACTED (total count)
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function fetchNotContacted(sequenceId) {
-    // Strategy 1: POST /v1/analytics/stats
-    try {
-        const stats = await shApi('POST', '/v1/analytics/stats', { sequenceId });
-        const p = stats.payload?.prospects?.[0];
-        if (p && (p.notContacted !== undefined && p.notContacted !== null)) {
-            return Number(p.notContacted);
+    // Strategy 1: POST /v1/analytics/stats (with retry on rate-limit)
+    for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+            const stats = await shApi('POST', '/v1/analytics/stats', { sequenceId });
+            const p = stats.payload?.prospects?.[0];
+            if (p && p.notContacted !== undefined && p.notContacted !== null) {
+                return Number(p.notContacted);
+            }
+            break; // got a response but no data — move to next strategy
+        } catch (err) {
+            if (err.isRateLimit && attempt === 0) {
+                await sleep(err.retryAfterSec ? err.retryAfterSec * 1000 : 2000);
+                continue;
+            }
+            break;
         }
-    } catch {}
+    }
 
-    // Strategy 2: GET /v1/sequences/{id} detail endpoint (proven in server.js)
-    try {
-        const detail = await shApi('GET', `/v1/sequences/${sequenceId}`, null);
-        const s = detail.payload || detail.data || detail;
-        const count = extractEmbeddedCount(s);
-        if (count !== null) return count;
-    } catch {}
+    // Strategy 2: GET /v1/sequences/{id} detail (with retry on rate-limit)
+    for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+            const detail = await shApi('GET', `/v1/sequences/${sequenceId}`, null);
+            const s = detail.payload || detail.data || detail;
+            const count = extractEmbeddedCount(s);
+            if (count !== null) return count;
+            break;
+        } catch (err) {
+            if (err.isRateLimit && attempt === 0) {
+                await sleep(2000);
+                continue;
+            }
+            break;
+        }
+    }
+
+    // Strategy 3: GET /v1/sequences/{id}/prospects?status=... (total count)
+    for (const status of ['NOT_CONTACTED', 'notContacted', 'not_contacted']) {
+        try {
+            const data = await shApi('GET',
+                `/v1/sequences/${sequenceId}/prospects?status=${status}`, null);
+            const total = data.total ?? data.totalCount ?? data.total_count
+                ?? data.meta?.total ?? data.pagination?.total
+                ?? data.payload?.total ?? data.payload?.totalCount;
+            if (total !== null && total !== undefined) return Number(total);
+        } catch {}
+    }
 
     return null;
 }
@@ -210,14 +242,15 @@ async function refreshCache() {
             }
         }
 
-        // 4. Fetch remaining counts with controlled concurrency
+        // 4. Fetch remaining counts (lower concurrency to avoid rate limits)
+        const COUNT_BATCH = 5;
         let errorCount = 0;
         let timedOut = false;
 
-        for (let i = 0; i < needsFetch.length; i += CONCURRENCY) {
+        for (let i = 0; i < needsFetch.length; i += COUNT_BATCH) {
             if (Date.now() > deadline) { timedOut = true; break; }
 
-            const chunk = needsFetch.slice(i, i + CONCURRENCY);
+            const chunk = needsFetch.slice(i, i + COUNT_BATCH);
             const results = await Promise.all(chunk.map(async (seq) => {
                 const count = await fetchNotContacted(seq.id);
                 return { id: seq.id, count };
@@ -228,7 +261,7 @@ async function refreshCache() {
                 if (r.count === null) errorCount++;
             }
 
-            if (i + CONCURRENCY < needsFetch.length) {
+            if (i + COUNT_BATCH < needsFetch.length) {
                 await sleep(BATCH_DELAY);
             }
         }
