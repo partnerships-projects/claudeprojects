@@ -44,14 +44,20 @@ function extractEmbeddedCount(s) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function fetchActiveSequences() {
-    // Fetch page 1 (with retry on any error)
+    const PAGE_TIMEOUT = 3000; // 3s timeout for page fetches (fast fail)
+
+    // Fetch page 1
     let firstData;
     try {
-        firstData = await shApi('GET', '/v1/sequences?page=1', null);
+        firstData = await shApi('GET', '/v1/sequences?page=1', null, PAGE_TIMEOUT);
     } catch (err) {
-        await sleep(err.isRateLimit ? 2000 : 1000);
-        try { firstData = await shApi('GET', '/v1/sequences?page=1', null); }
-        catch { return []; }
+        if (err.isRateLimit) {
+            await sleep(2000);
+            try { firstData = await shApi('GET', '/v1/sequences?page=1', null, PAGE_TIMEOUT); }
+            catch { return []; }
+        } else {
+            return [];
+        }
     }
     if (!firstData) return [];
 
@@ -64,54 +70,31 @@ async function fetchActiveSequences() {
 
     if (totalPages === 1) return filterActive(all);
 
-    // Fetch remaining pages in small batches (3 at a time) to avoid rate-limiting.
+    // Fetch remaining pages in parallel batches of 5.
+    // Stop as soon as a batch yields zero items (gone past last page).
     const maxPage = (totalPages && totalPages > 1) ? totalPages : 30;
-    const PAGE_BATCH = 3;
-    let consecutiveFailures = 0;
 
-    for (let start = 2; start <= maxPage; start += PAGE_BATCH) {
+    for (let startPage = 2; startPage <= maxPage; startPage += 5) {
         const batch = [];
-        for (let p = start; p < start + PAGE_BATCH && p <= maxPage; p++) batch.push(p);
+        for (let p = startPage; p < startPage + 5 && p <= maxPage; p++) batch.push(p);
 
         const results = await Promise.all(batch.map(async (p) => {
-            try {
-                return await shApi('GET', `/v1/sequences?page=${p}`, null);
-            } catch (err) {
-                // Retry once on rate-limit (pagination data is critical)
-                if (err.isRateLimit) {
-                    await sleep(2000);
-                    try { return await shApi('GET', `/v1/sequences?page=${p}`, null); }
-                    catch { return null; }
-                }
-                return null;
-            }
+            try { return await shApi('GET', `/v1/sequences?page=${p}`, null, PAGE_TIMEOUT); }
+            catch { return null; }
         }));
 
-        let gotItems = false;
+        let batchItems = 0;
         for (const data of results) {
             if (!data) continue;
             const items = extractItems(data);
             if (Array.isArray(items) && items.length > 0) {
                 all.push(...items);
-                gotItems = true;
+                batchItems += items.length;
             }
         }
 
-        if (gotItems) {
-            consecutiveFailures = 0;
-        } else if (results.every(d => d !== null)) {
-            // All pages returned OK but with no items — genuinely no more data
-            break;
-        } else {
-            // Some/all pages failed (rate-limited) — retry this batch with backoff
-            consecutiveFailures++;
-            if (consecutiveFailures >= 3) break;
-            await sleep(2000 * consecutiveFailures);
-            start -= PAGE_BATCH; // retry same batch on next loop iteration
-            continue;
-        }
-
-        if (start + PAGE_BATCH <= maxPage) await sleep(200);
+        // No items in this batch → we've passed the last page, stop
+        if (batchItems === 0) break;
     }
 
     return filterActive(all);
@@ -159,54 +142,37 @@ async function tryProspects(sequenceId) {
 // ─────────────────────────────────────────────────────────────────────────────
 // runCountRound(ids, fetchFn, concurrency, deadline)
 // Tries one strategy on a batch of IDs. If the first batch yields zero
-// successes AND no rate-limit errors, abandons this strategy (saves time).
-// On rate-limit: stops making calls (saves API budget) but does NOT abandon,
-// so the same strategy is retried on the next incremental call.
-// Returns { counts: { id→count }, abandoned: bool, rateLimited: bool }
+// successes, abandons this strategy immediately (saves ~15s per bad strategy).
+// Returns { counts: { id→count }, abandoned: bool }
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function runCountRound(ids, fetchFn, concurrency, deadline) {
     const counts = {};
     let abandoned = false;
-    let rateLimited = false;
 
     for (let i = 0; i < ids.length; i += concurrency) {
         if (Date.now() > deadline) break;
 
         const chunk = ids.slice(i, i + concurrency);
-
         const results = await Promise.all(chunk.map(async (id) => {
-            try {
-                return { id, count: await fetchFn(id) };
-            } catch (err) {
-                return { id, count: null, rl: !!err.isRateLimit };
-            }
+            try { return { id, count: await fetchFn(id) }; }
+            catch { return { id, count: null }; }
         }));
 
-        let batchRateLimit = 0;
         for (const r of results) {
             counts[r.id] = r.count;
-            if (r.rl) batchRateLimit++;
         }
 
-        // First batch, zero successes, no rate-limit → strategy genuinely doesn't work
+        // After first batch: if zero successes, this strategy doesn't work — abort
         if (i === 0) {
             const successes = results.filter(r => r.count !== null).length;
-            if (successes === 0 && batchRateLimit === 0) { abandoned = true; break; }
-        }
-
-        // Rate-limited: stop immediately, save partial progress.
-        // Don't waste time retrying — rate limit needs ~60s to reset.
-        // Frontend will retry after 15s, carrying over what we already have.
-        if (batchRateLimit > 0) {
-            rateLimited = true;
-            break;
+            if (successes === 0) { abandoned = true; break; }
         }
 
         if (i + concurrency < ids.length) await sleep(BATCH_DELAY);
     }
 
-    return { counts, abandoned, rateLimited };
+    return { counts, abandoned };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -228,58 +194,30 @@ async function refreshCache() {
     const deadline = Date.now() + WALL_CLOCK_LIMIT;
 
     try {
-        // 2. Read existing cache — enables incremental progress across calls
-        const existingCache = await kvGet(CACHE_KEY);
-        const existingCounts = existingCache?.sequences || {};
-
-        // 3. Fetch active sequences — or reuse cached list if recent (< 2 min)
-        //    Skipping pagination on retries saves 10-15s for count-fetching.
-        let activeSequences;
-        let skippedPagination = false;
-
-        if (existingCache?.last_updated && existingCache?.metadata) {
-            const cacheAge = Date.now() - new Date(existingCache.last_updated).getTime();
-            if (cacheAge < 2 * 60 * 1000 && Object.keys(existingCache.metadata).length > 0) {
-                activeSequences = Object.keys(existingCache.metadata).map(id => ({
-                    id,
-                    name: existingCache.metadata[id]?.name || `Sequence ${id}`,
-                    client: existingCache.metadata[id]?.client || null,
-                    embeddedCount: null,
-                }));
-                skippedPagination = true;
-            }
-        }
-
-        if (!skippedPagination) {
-            activeSequences = await fetchActiveSequences();
-        }
-
+        // 2. Fetch active sequences (SalesHandy is the source of truth)
+        const activeSequences = await fetchActiveSequences();
         if (activeSequences.length === 0) {
             return { ok: false, reason: 'no_active_sequences' };
         }
 
-        // 4. Build maps — carry over non-null counts from previous cache
+        // 3. Separate sequences with/without embedded counts
         const sequences = {};   // id → not_contacted count
         const metadata = {};    // id → { name, client }
         let pending = [];       // IDs that still need counts
         let embeddedUsed = 0;
-        let carriedOver = 0;
 
         for (const seq of activeSequences) {
             metadata[seq.id] = { name: seq.name, client: seq.client };
             if (seq.embeddedCount !== null) {
                 sequences[seq.id] = seq.embeddedCount;
                 embeddedUsed++;
-            } else if (existingCounts[seq.id] != null) {
-                // Carry over count from previous refresh (non-null only)
-                sequences[seq.id] = existingCounts[seq.id];
-                carriedOver++;
             } else {
                 pending.push(seq.id);
             }
         }
 
-        // 5. Try count strategies on remaining pending IDs only
+        // 4. Try count strategies in ROUNDS (test first batch, skip if useless)
+        //    Each round makes ONE API call per sequence — fast discovery of what works.
         const strategies = [
             { name: 'analytics', fn: tryAnalytics },
             { name: 'detail',    fn: tryDetail },
@@ -291,10 +229,11 @@ async function refreshCache() {
         for (const strategy of strategies) {
             if (pending.length === 0 || Date.now() > deadline) break;
 
-            const { counts, abandoned, rateLimited } = await runCountRound(
+            const { counts, abandoned } = await runCountRound(
                 pending, strategy.fn, CONCURRENCY, deadline,
             );
 
+            // Merge successes
             let filled = 0;
             for (const [id, count] of Object.entries(counts)) {
                 if (count !== null) {
@@ -303,15 +242,12 @@ async function refreshCache() {
                 }
             }
 
-            if (abandoned) continue;
+            if (abandoned) continue; // strategy failed — try next
 
             if (!winningStrategy && filled > 0) winningStrategy = strategy.name;
 
+            // Remove resolved IDs from pending
             pending = pending.filter(id => sequences[id] === undefined || sequences[id] === null);
-
-            // Rate-limited: stop trying other strategies (they'll fail too).
-            // Save API budget so the rate limit resets sooner for the next call.
-            if (rateLimited) break;
 
             if (Date.now() > deadline) { timedOut = true; break; }
         }
@@ -323,9 +259,9 @@ async function refreshCache() {
             errorCount++;
         }
 
-        // 6. Save to Redis (partial is better than nothing)
-        const withCounts = Object.values(sequences).filter(c => c !== null).length;
-        if (Object.keys(sequences).length > 0) {
+        // 5. Save to Redis (partial on timeout is better than nothing)
+        const fetched = Object.keys(sequences).length;
+        if (fetched > 0) {
             const cacheData = {
                 last_updated: new Date().toISOString(),
                 sequences,
@@ -338,16 +274,14 @@ async function refreshCache() {
         return {
             ok: true,
             total: activeSequences.length,
-            fetched: withCounts,
+            fetched,
             errors: errorCount,
-            partial: errorCount > 0,
+            partial: timedOut,
             embeddedUsed,
-            carriedOver,
-            skippedPagination,
             winningStrategy,
         };
     } finally {
-        // 7. Release lock
+        // 6. Release lock
         await kvDel(LOCK_KEY);
     }
 }
@@ -369,15 +303,11 @@ async function getDashboardData() {
 
     const age = Date.now() - new Date(cached.last_updated).getTime();
 
-    // Check if any counts are still null (incomplete from partial refresh)
-    const hasNulls = cached.sequences &&
-        Object.values(cached.sequences).some(c => c === null);
-
-    if (age < CACHE_FRESH_MS && !hasNulls) {
+    if (age < CACHE_FRESH_MS) {
         return { data: cached, source: 'cache' };
     }
 
-    return { data: cached, source: hasNulls ? 'incomplete' : 'stale', needsRefresh: true };
+    return { data: cached, source: 'stale', needsRefresh: true };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -427,62 +357,6 @@ module.exports = async function handler(req, res) {
             kvDel('sh:response'),
         ]);
         return res.status(200).json({ ok: true, message: 'Cache cleared. Refresh the page.' });
-    }
-
-    // ── ?debug=2 — test open-api.saleshandy.com endpoint ──────────────
-    if (req.query.debug === '2') {
-        const ALT_BASE = 'https://open-api.saleshandy.com';
-        const headers = { 'x-api-key': API_KEY, 'Authorization': `Bearer ${API_KEY}` };
-        const results = {};
-        try {
-            const https = require('https');
-            const fetch = (url) => new Promise((resolve, reject) => {
-                const parsed = new URL(url);
-                const opts = {
-                    hostname: parsed.hostname, port: 443,
-                    path: parsed.pathname + parsed.search, method: 'GET',
-                    headers: { 'Content-Type': 'application/json', ...headers },
-                };
-                const r = https.request(opts, (resp) => {
-                    let d = ''; resp.on('data', c => d += c);
-                    resp.on('end', () => resolve({ status: resp.statusCode, body: d }));
-                });
-                r.on('error', e => reject(e));
-                r.setTimeout(10000, () => { r.destroy(); reject(new Error('Timeout')); });
-                r.end();
-            });
-            // Test 1: /v1/sequences?page=1 on alt base
-            const seqRes = await fetch(`${ALT_BASE}/v1/sequences?page=1`);
-            let seqData;
-            try { seqData = JSON.parse(seqRes.body); } catch { seqData = seqRes.body.slice(0, 2000); }
-            const items = extractItems(seqData);
-            const firstItem = Array.isArray(items) && items[0] ? items[0] : null;
-            results.altBase = {
-                url: `${ALT_BASE}/v1/sequences?page=1`,
-                status: seqRes.status,
-                topLevelKeys: seqData && typeof seqData === 'object' ? Object.keys(seqData) : null,
-                totalPages: seqData?.totalPages ?? seqData?.total_pages ?? seqData?.meta?.totalPages ?? null,
-                itemCount: Array.isArray(items) ? items.length : 0,
-                firstItemKeys: firstItem ? Object.keys(firstItem) : null,
-                firstItemSample: firstItem ? JSON.parse(JSON.stringify(firstItem, (k, v) => typeof v === 'string' && v.length > 100 ? v.slice(0, 100) + '...' : v)) : null,
-            };
-            // Test 2: same on current base for comparison
-            const CUR_BASE = 'https://leo-open-api-gateway.saleshandy.com';
-            const curRes = await fetch(`${CUR_BASE}/v1/sequences?page=1`);
-            let curData;
-            try { curData = JSON.parse(curRes.body); } catch { curData = curRes.body.slice(0, 2000); }
-            const curItems = extractItems(curData);
-            const curFirst = Array.isArray(curItems) && curItems[0] ? curItems[0] : null;
-            results.currentBase = {
-                url: `${CUR_BASE}/v1/sequences?page=1`,
-                status: curRes.status,
-                itemCount: Array.isArray(curItems) ? curItems.length : 0,
-                firstItemKeys: curFirst ? Object.keys(curFirst) : null,
-            };
-        } catch (err) {
-            results.error = err.message;
-        }
-        return res.status(200).json(results);
     }
 
     // ── ?debug=1 — raw pagination debug ─────────────────────────────────
@@ -585,6 +459,10 @@ module.exports = async function handler(req, res) {
         };
 
         res.status(200).json(response);
+
+        if (needsRefresh) {
+            refreshCache().catch(() => {});
+        }
     } catch (err) {
         if (KV_URL) {
             try {
