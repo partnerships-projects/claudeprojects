@@ -186,9 +186,18 @@ async function refreshCache() {
         const failed = [];
         let newlyFetched = 0;
         let batchesSinceLastSave = 0;
+        let consecutiveEmpty = 0;
+        let rateLimited = false;
 
         for (let i = 0; i < pending.length; i += CONCURRENCY) {
             if (Date.now() > deadline) break;
+
+            // Stop early if rate-limited — remaining calls will all fail
+            // and each failure wastes a rate-limit slot, delaying recovery.
+            if (consecutiveEmpty >= 2) {
+                rateLimited = true;
+                break;
+            }
 
             const batch = pending.slice(i, i + CONCURRENCY);
             const results = await Promise.all(
@@ -197,19 +206,26 @@ async function refreshCache() {
                 )
             );
 
+            let batchHits = 0;
             for (const { id, count } of results) {
                 if (count !== null) {
                     counts[id] = count;
                     newlyFetched++;
+                    batchHits++;
                 } else {
                     failed.push(id);
                 }
             }
 
+            if (batchHits === 0) {
+                consecutiveEmpty++;
+            } else {
+                consecutiveEmpty = 0;
+            }
+
             batchesSinceLastSave++;
 
-            // Save to Redis every 3 batches (~9 IDs) — keeps polls fresh
-            // while avoiding per-batch Redis overhead (~50ms per write)
+            // Save to Redis every 3 batches — keeps polls fresh
             if (batchesSinceLastSave >= 3 || i + CONCURRENCY >= pending.length) {
                 await kvSet(CACHE_KEY, {
                     last_updated: new Date().toISOString(),
@@ -219,7 +235,7 @@ async function refreshCache() {
                 batchesSinceLastSave = 0;
             }
 
-            // Short pause between batches
+            // Short pause between calls
             if (i + CONCURRENCY < pending.length && Date.now() < deadline) {
                 await sleep(BATCH_DELAY);
             }
@@ -236,6 +252,8 @@ async function refreshCache() {
             fetched: totalWithCounts,
             errors: failed.length,
             partial: totalWithCounts < activeSequences.length,
+            rateLimited,
+            retryAfterMs: rateLimited ? 30000 : 2000,
             carriedOver,
             newlyFetched,
             skippedPagination,

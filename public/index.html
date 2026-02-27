@@ -350,13 +350,27 @@ async function triggerRefresh() {
                 return;
             }
 
-            // Partial — brief pause then fire another refresh cycle
+            // Partial — pause before next cycle (longer if rate-limited)
             refreshRetries++;
             var got = meta.fetched || 0;
             var total = meta.total || '?';
             var pct = total > 0 ? Math.round(got / total * 100) : 0;
-            setStatus('info', 'Loading stats: ' + got + '/' + total + ' (' + pct + '%). Continuing...');
-            await new Promise(function(r) { setTimeout(r, 2000); });
+            var retryMs = meta.retryAfterMs || 2000;
+
+            if (meta.rateLimited && retryMs > 5000) {
+                // Show countdown while waiting for rate limit to reset
+                var endTime = Date.now() + retryMs;
+                while (Date.now() < endTime) {
+                    var remaining = Math.ceil((endTime - Date.now()) / 1000);
+                    setStatus('info', 'Loaded ' + got + '/' + total + ' (' + pct + '%). Rate limited — retrying in ' + remaining + 's...');
+                    await new Promise(function(r) { setTimeout(r, 1000); });
+                    // Keep polling for latest data while waiting
+                    await pollAndRender();
+                }
+            } else {
+                setStatus('info', 'Loading stats: ' + got + '/' + total + ' (' + pct + '%). Continuing...');
+                await new Promise(function(r) { setTimeout(r, retryMs); });
+            }
         }
 
         // Exhausted retries
