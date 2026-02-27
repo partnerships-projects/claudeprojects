@@ -44,20 +44,14 @@ function extractEmbeddedCount(s) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function fetchActiveSequences() {
-    const PAGE_TIMEOUT = 3000; // 3s timeout for page fetches (fast fail)
-
-    // Fetch page 1
+    // Fetch page 1 (with retry on any error)
     let firstData;
     try {
-        firstData = await shApi('GET', '/v1/sequences?page=1', null, PAGE_TIMEOUT);
+        firstData = await shApi('GET', '/v1/sequences?page=1', null);
     } catch (err) {
-        if (err.isRateLimit) {
-            await sleep(2000);
-            try { firstData = await shApi('GET', '/v1/sequences?page=1', null, PAGE_TIMEOUT); }
-            catch { return []; }
-        } else {
-            return [];
-        }
+        await sleep(err.isRateLimit ? 2000 : 1000);
+        try { firstData = await shApi('GET', '/v1/sequences?page=1', null); }
+        catch { return []; }
     }
     if (!firstData) return [];
 
@@ -70,31 +64,22 @@ async function fetchActiveSequences() {
 
     if (totalPages === 1) return filterActive(all);
 
-    // Fetch remaining pages in parallel batches of 5.
-    // Stop as soon as a batch yields zero items (gone past last page).
+    // Fetch remaining pages in parallel (all at once if totalPages is known).
     const maxPage = (totalPages && totalPages > 1) ? totalPages : 30;
+    const pageNums = [];
+    for (let p = 2; p <= maxPage; p++) pageNums.push(p);
 
-    for (let startPage = 2; startPage <= maxPage; startPage += 5) {
-        const batch = [];
-        for (let p = startPage; p < startPage + 5 && p <= maxPage; p++) batch.push(p);
+    const results = await Promise.all(pageNums.map(async (p) => {
+        try { return await shApi('GET', `/v1/sequences?page=${p}`, null); }
+        catch { return null; }
+    }));
 
-        const results = await Promise.all(batch.map(async (p) => {
-            try { return await shApi('GET', `/v1/sequences?page=${p}`, null, PAGE_TIMEOUT); }
-            catch { return null; }
-        }));
-
-        let batchItems = 0;
-        for (const data of results) {
-            if (!data) continue;
-            const items = extractItems(data);
-            if (Array.isArray(items) && items.length > 0) {
-                all.push(...items);
-                batchItems += items.length;
-            }
+    for (const data of results) {
+        if (!data) continue;
+        const items = extractItems(data);
+        if (Array.isArray(items) && items.length > 0) {
+            all.push(...items);
         }
-
-        // No items in this batch → we've passed the last page, stop
-        if (batchItems === 0) break;
     }
 
     return filterActive(all);
