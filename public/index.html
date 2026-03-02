@@ -382,14 +382,13 @@ async function triggerRefresh() {
             var pct = total > 0 ? Math.round(got / total * 100) : 0;
             var retryMs = meta.retryAfterMs || 2000;
 
-            if (meta.rateLimited && retryMs > 5000) {
-                // Show countdown while waiting for rate limit to reset
+            if (retryMs > 5000) {
+                // Show countdown while waiting for rate limit to cool down
                 var endTime = Date.now() + retryMs;
                 while (Date.now() < endTime) {
                     var remaining = Math.ceil((endTime - Date.now()) / 1000);
-                    setStatus('info', 'Loaded ' + got + '/' + total + ' (' + pct + '%). Rate limited — retrying in ' + remaining + 's...');
+                    setStatus('info', 'Loaded ' + got + '/' + total + ' (' + pct + '%). Cooling down — next batch in ' + remaining + 's...');
                     await new Promise(function(r) { setTimeout(r, 1000); });
-                    // Keep polling for latest data while waiting
                     await pollAndRender();
                 }
             } else {

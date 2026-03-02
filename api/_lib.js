@@ -21,8 +21,9 @@ const LAST_REFRESH_KEY = 'saleshandy:last_refresh';
 // Timing / concurrency
 const HTTP_TIMEOUT = 10000;      // 10s per API call (stats)
 const PAGE_TIMEOUT = 5000;       // 5s for pagination (fast-fail empty pages)
-const CONCURRENCY = 1;           // sequential — avoids rate limit penalties for concurrent requests
-const BATCH_DELAY = 100;         // 100ms between calls (gentle pacing)
+const CONCURRENCY = 3;           // burst phase: 3 parallel stats requests
+const BATCH_DELAY = 300;         // 300ms between burst batches
+const THROTTLE_DELAY = 2000;     // 2s between calls in throttled mode (after rate limit)
 const CACHE_FRESH_MS = 5 * 60 * 1000;  // 5 min — cache considered fresh
 const LOCK_TTL = 55;             // 55s — just under Vercel 60s limit
 const CACHE_TTL = 600;           // 10 min — Redis key safety-net expiry
@@ -145,7 +146,7 @@ function extractItems(data) {
 module.exports = {
     API_KEY, THRESHOLD, KV_URL,
     CACHE_KEY, LOCK_KEY, LAST_REFRESH_KEY,
-    HTTP_TIMEOUT, PAGE_TIMEOUT, CONCURRENCY, BATCH_DELAY,
+    HTTP_TIMEOUT, PAGE_TIMEOUT, CONCURRENCY, BATCH_DELAY, THROTTLE_DELAY,
     CACHE_FRESH_MS, LOCK_TTL, CACHE_TTL, WALL_CLOCK_LIMIT, MAX_RETRIES,
     shApi, sleep,
     kvGet, kvSet, kvDel, kvSetNX,

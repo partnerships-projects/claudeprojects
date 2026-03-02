@@ -22,7 +22,7 @@
 const {
     API_KEY, THRESHOLD, KV_URL,
     CACHE_KEY, LOCK_KEY, LAST_REFRESH_KEY,
-    PAGE_TIMEOUT, CONCURRENCY, BATCH_DELAY,
+    PAGE_TIMEOUT, CONCURRENCY, BATCH_DELAY, THROTTLE_DELAY,
     CACHE_FRESH_MS, LOCK_TTL, CACHE_TTL, WALL_CLOCK_LIMIT,
     shApi, sleep,
     kvGet, kvSet, kvDel, kvSetNX,
@@ -180,26 +180,23 @@ async function refreshCache() {
             metadata,
         }, CACHE_TTL);
 
-        // Fetch stats for pending IDs: controlled concurrency, periodic saves.
-        // Fast-fail on 429 means each batch completes in ~1s (not ~8s with retries).
-        // With 300ms delay: 80 IDs / 3 per batch = 27 batches × 1.3s = ~35s total.
+        // Two-phase fetch: burst then throttle.
+        //   Burst:    CONCURRENCY parallel, BATCH_DELAY gap — fast until rate limit.
+        //   Throttle: 1 sequential, THROTTLE_DELAY gap — stays under rate limit.
+        // This maximizes calls per invocation instead of stopping and waiting.
         const failed = [];
         let newlyFetched = 0;
         let batchesSinceLastSave = 0;
         let consecutiveEmpty = 0;
         let rateLimited = false;
+        let throttled = false;
+        let idx = 0;
 
-        for (let i = 0; i < pending.length; i += CONCURRENCY) {
+        while (idx < pending.length) {
             if (Date.now() > deadline) break;
 
-            // Stop early if rate-limited — remaining calls will all fail
-            // and each failure wastes a rate-limit slot, delaying recovery.
-            if (consecutiveEmpty >= 2) {
-                rateLimited = true;
-                break;
-            }
-
-            const batch = pending.slice(i, i + CONCURRENCY);
+            const batchSize = throttled ? 1 : CONCURRENCY;
+            const batch = pending.slice(idx, idx + batchSize);
             const results = await Promise.all(
                 batch.map(id =>
                     fetchStat(id).then(count => ({ id, count }))
@@ -219,14 +216,25 @@ async function refreshCache() {
 
             if (batchHits === 0) {
                 consecutiveEmpty++;
+                if (throttled && consecutiveEmpty >= 3) {
+                    // Still failing in throttled mode — stop for this cycle
+                    rateLimited = true;
+                    break;
+                }
+                if (!throttled && consecutiveEmpty >= 2) {
+                    // Switch from burst → throttle mode
+                    throttled = true;
+                    consecutiveEmpty = 0;
+                }
             } else {
                 consecutiveEmpty = 0;
             }
 
+            idx += batchSize;
             batchesSinceLastSave++;
 
             // Save to Redis every 3 batches — keeps polls fresh
-            if (batchesSinceLastSave >= 3 || i + CONCURRENCY >= pending.length) {
+            if (batchesSinceLastSave >= 3 || idx >= pending.length) {
                 await kvSet(CACHE_KEY, {
                     last_updated: new Date().toISOString(),
                     sequences: counts,
@@ -235,9 +243,9 @@ async function refreshCache() {
                 batchesSinceLastSave = 0;
             }
 
-            // Short pause between calls
-            if (i + CONCURRENCY < pending.length && Date.now() < deadline) {
-                await sleep(BATCH_DELAY);
+            // Pace: fast in burst mode, slow in throttled mode
+            if (idx < pending.length && Date.now() < deadline) {
+                await sleep(throttled ? THROTTLE_DELAY : BATCH_DELAY);
             }
         }
 
@@ -253,7 +261,8 @@ async function refreshCache() {
             errors: failed.length,
             partial: totalWithCounts < activeSequences.length,
             rateLimited,
-            retryAfterMs: rateLimited ? 30000 : 2000,
+            throttled,
+            retryAfterMs: rateLimited ? 15000 : 2000,
             carriedOver,
             newlyFetched,
             skippedPagination,
