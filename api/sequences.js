@@ -37,28 +37,43 @@ const {
 // Returns only active sequences (progress === 1).
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function fetchActiveSequences() {
-    let firstData;
-    try {
-        firstData = await shApi('GET', '/v1/sequences?page=1', null, PAGE_TIMEOUT);
-    } catch {
-        return [];
+function extractTotalPages(data) {
+    return data.totalPages ?? data.total_pages
+        ?? data.meta?.totalPages ?? data.meta?.last_page ?? null;
+}
+
+async function fetchPage(page) {
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+        try {
+            return await shApi('GET', `/v1/sequences?page=${page}`, null, PAGE_TIMEOUT);
+        } catch (err) {
+            if (attempt < MAX_RETRIES - 1) {
+                await sleep(err.isRateLimit ? 3000 : 1000);
+            }
+        }
     }
+    return null;
+}
+
+async function fetchActiveSequences() {
+    const firstData = await fetchPage(1);
     if (!firstData) return [];
 
     const firstItems = extractItems(firstData);
     if (!Array.isArray(firstItems) || firstItems.length === 0) return [];
     const all = [...firstItems];
 
-    // Fetch remaining pages in batches of 5; stop on empty batch.
-    for (let start = 2; start <= 30; start += 5) {
-        const pages = [];
-        for (let p = start; p < start + 5 && p <= 30; p++) pages.push(p);
+    const totalPages = extractTotalPages(firstData);
+    const maxPage = totalPages != null ? Math.min(totalPages, 30) : 30;
 
-        const results = await Promise.all(pages.map(async (p) => {
-            try { return await shApi('GET', `/v1/sequences?page=${p}`, null, PAGE_TIMEOUT); }
-            catch { return null; }
-        }));
+    // Fetch remaining pages in batches of 3 (conservative parallelism).
+    // Unlike before: uses totalPages so we never stop early, and fetchPage
+    // retries failures so individual pages aren't silently dropped.
+    for (let start = 2; start <= maxPage; start += 3) {
+        const pages = [];
+        for (let p = start; p < start + 3 && p <= maxPage; p++) pages.push(p);
+
+        const results = await Promise.all(pages.map(p => fetchPage(p)));
 
         let batchItems = 0;
         for (const data of results) {
@@ -69,7 +84,8 @@ async function fetchActiveSequences() {
                 batchItems += items.length;
             }
         }
-        if (batchItems === 0) break;
+        // Only stop early if we DON'T know totalPages (legacy fallback)
+        if (totalPages == null && batchItems === 0) break;
     }
 
     return all
@@ -362,8 +378,7 @@ module.exports = async function handler(req, res) {
                 const items = extractItems(data);
                 if (!Array.isArray(items) || items.length === 0) break;
                 allRaw.push(...items);
-                const tp = data.totalPages ?? data.total_pages
-                    ?? data.meta?.totalPages ?? data.meta?.last_page ?? null;
+                const tp = extractTotalPages(data);
                 pages.push({
                     page: p,
                     itemCount: items.length,
