@@ -6,19 +6,13 @@
 //
 //   GET /api/sequences            → instant Redis read (all sequences + counts)
 //   GET /api/sequences?refresh=1  → incremental refresh, returns updated data
-//   GET /api/sequences?reset=1    → clear all Redis keys
-//   GET /api/sequences?debug=1    → raw pagination debug
+//   GET /api/sequences?reset=1    → clear all Redis keys (requires auth)
+//   GET /api/sequences?debug=1    → raw pagination debug (requires auth)
 //
-// Cache (Redis "saleshandy:not_contacted:active_sequences"):
-//   { last_updated, sequences: { id: count }, metadata: { id: { name, client } } }
-//   sequences{} only has entries with real counts — never nulls.
-//   metadata{} has ALL active sequences (so pagination-skip knows the full list).
-//
-// Refresh is incremental:
-//   - Carries over already-fetched counts from previous cache.
-//   - Fetches stats only for sequences not yet in cache.
-//   - Saves progress after each batch (only complete entries).
-//   - Stops at 50s wall clock; frontend silently retries for the rest.
+// Authentication:
+//   All endpoints require DASHBOARD_SECRET via ?token= or Authorization header.
+//   Vercel cron uses CRON_SECRET via Authorization: Bearer header.
+//   If neither secret is configured, the dashboard is open (backwards compat).
 // ─────────────────────────────────────────────────────────────────────────────
 
 const {
@@ -33,10 +27,6 @@ const {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Authentication
-// If DASHBOARD_SECRET is set, all requests must include it via:
-//   ?token=SECRET  or  Authorization: Bearer SECRET
-// Vercel cron uses CRON_SECRET via Authorization header.
-// If neither secret is configured, the dashboard is open (backwards compatible).
 // ─────────────────────────────────────────────────────────────────────────────
 
 function isAuthorized(req) {
@@ -46,13 +36,6 @@ function isAuthorized(req) {
     if (DASHBOARD_SECRET && (token === DASHBOARD_SECRET || bearer === DASHBOARD_SECRET)) return true;
     if (CRON_SECRET && bearer === CRON_SECRET) return true;
     return false;
-}
-
-function securityHeaders(res) {
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('X-Frame-Options', 'DENY');
-    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -377,7 +360,11 @@ function buildDashboardResponse(data) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 module.exports = async function handler(req, res) {
-    securityHeaders(res);
+    // Security headers
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+
     if (req.method === 'OPTIONS') { res.status(200).end(); return; }
 
     if (!API_KEY) {
@@ -389,7 +376,7 @@ module.exports = async function handler(req, res) {
         return res.status(401).json({ error: 'unauthorized' });
     }
 
-    // ── ?reset=1 — clear all Redis keys (destructive) ───────────────────
+    // ── ?reset=1 — clear all Redis keys ─────────────────────────────────
     if (req.query.reset === '1' && KV_URL) {
         await Promise.all([
             kvDel(CACHE_KEY),

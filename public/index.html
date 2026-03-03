@@ -123,6 +123,23 @@
             position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
             color: var(--text-muted); font-size: 12px;
         }
+        .auth-overlay {
+            position: fixed; inset: 0; background: var(--bg-primary); z-index: 999;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .auth-box {
+            background: var(--bg-card); border: 1px solid var(--border); border-radius: 14px;
+            padding: 40px; max-width: 380px; width: 90%; text-align: center;
+        }
+        .auth-box h2 { font-size: 20px; margin-bottom: 8px; }
+        .auth-box p { color: var(--text-secondary); font-size: 13px; margin-bottom: 24px; }
+        .auth-box input {
+            width: 100%; padding: 12px 16px; font-size: 14px;
+            background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px;
+            color: var(--text-primary); outline: none; margin-bottom: 12px;
+        }
+        .auth-box input:focus { border-color: var(--accent-blue); }
+        .auth-error { color: var(--accent-red); font-size: 13px; margin-bottom: 12px; display: none; }
         @media (max-width: 768px) {
             .page { padding: 20px 16px; }
             .header { flex-direction: column; gap: 12px; }
@@ -133,10 +150,22 @@
     </style>
 </head>
 <body>
+
+<!-- Auth gate overlay (hidden until 401) -->
+<div class="auth-overlay hidden" id="auth-gate">
+    <div class="auth-box">
+        <h2>Dashboard Access</h2>
+        <p>Enter the dashboard password to continue.</p>
+        <input type="password" id="auth-input" placeholder="Password">
+        <div class="auth-error" id="auth-error">Wrong password.</div>
+        <button class="btn btn-primary" style="width:100%;" onclick="tryAuth()">Enter</button>
+    </div>
+</div>
+
 <div class="page">
     <div class="header">
         <div>
-            <h1>Saleshandy Prospects Monitor</h1>
+            <h1>Sequence — Uncontacted Prospects</h1>
             <p>Active Saleshandy sequences &amp; their "Not Contacted" prospect counts</p>
             <div class="last-updated" id="last-updated"></div>
         </div>
@@ -220,23 +249,14 @@
     </div>
 </div>
 
-<div id="auth-gate" class="hidden" style="position:fixed;inset:0;background:var(--bg-primary);z-index:999;display:flex;align-items:center;justify-content:center;">
-    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:40px;max-width:380px;width:90%;text-align:center;">
-        <h2 style="font-size:20px;margin-bottom:8px;">Dashboard Access</h2>
-        <p style="color:var(--text-secondary);font-size:13px;margin-bottom:24px;">Enter the dashboard password to continue.</p>
-        <input type="password" id="auth-input" placeholder="Password" style="width:100%;padding:12px 16px;font-size:14px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);outline:none;margin-bottom:12px;">
-        <div id="auth-error" style="color:var(--accent-red);font-size:13px;margin-bottom:12px;display:none;">Wrong password.</div>
-        <button class="btn btn-primary" style="width:100%;" onclick="tryAuth()">Enter</button>
-    </div>
-</div>
-
 <script>
 var THRESHOLD = 2000;
 var refreshTimer = null;
 var isRefreshing = false;
 var allSequences = [];
 
-// ── Auth ──────────────────────────────────────────────────────────────────
+// ── Auth helpers ──────────────────────────────────────────────────────────────
+
 function getToken() { return localStorage.getItem('dashToken') || ''; }
 function setToken(t) { localStorage.setItem('dashToken', t); }
 
@@ -258,7 +278,6 @@ function tryAuth() {
     if (!pw) return;
     setToken(pw);
     document.getElementById('auth-error').style.display = 'none';
-    // Test the token
     fetch(apiUrl('/api/sequences'))
         .then(function(r) {
             if (r.status === 401) {
@@ -276,6 +295,8 @@ function tryAuth() {
 document.getElementById('auth-input').addEventListener('keydown', function(e) {
     if (e.key === 'Enter') tryAuth();
 });
+
+// ── UI helpers ────────────────────────────────────────────────────────────────
 
 function setStatus(type, msg) {
     var bar = document.getElementById('status-bar');
@@ -366,6 +387,7 @@ async function populateCache() {
             var data;
             try {
                 var res = await fetch(apiUrl('/api/sequences?refresh=1'));
+                if (res.status === 401) { showAuthGate(); return; }
                 data = await res.json();
             } catch (_) {
                 await new Promise(function(r) { setTimeout(r, 5000); });
@@ -436,6 +458,7 @@ function triggerRefresh() {
 
     fetch(apiUrl('/api/sequences?refresh=1'))
         .then(function(r) {
+            if (r.status === 401) { showAuthGate(); throw new Error('unauthorized'); }
             if (!r.ok) throw new Error('HTTP ' + r.status);
             return r.json();
         })
@@ -452,6 +475,7 @@ function triggerRefresh() {
         })
         .catch(function(err) {
             var msg = (err && err.message) || '';
+            if (msg === 'unauthorized') return;
             if (msg.indexOf('504') >= 0 || msg.indexOf('502') >= 0) {
                 setStatus('error', 'Refresh timed out — try again in 30s.');
             } else {
