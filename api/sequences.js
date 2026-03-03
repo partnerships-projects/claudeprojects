@@ -181,7 +181,6 @@ async function refreshCache() {
         // This maximizes calls per invocation instead of stopping and waiting.
         const failed = [];
         let newlyFetched = 0;
-        let batchesSinceLastSave = 0;
         let consecutiveEmpty = 0;
         let rateLimited = false;
         let throttled = false;
@@ -226,16 +225,14 @@ async function refreshCache() {
             }
 
             idx += batchSize;
-            batchesSinceLastSave++;
 
-            // Save to Redis every 3 batches — keeps polls fresh
-            if (batchesSinceLastSave >= 3 || idx >= pending.length) {
+            // Save to Redis after every batch — frontend polls Redis for progress
+            if (newlyFetched > 0 || idx >= pending.length) {
                 await kvSet(CACHE_KEY, {
                     last_updated: new Date().toISOString(),
                     sequences: counts,
                     metadata,
                 }, CACHE_TTL);
-                batchesSinceLastSave = 0;
             }
 
             // Pace: fast in burst mode, slow in throttled mode
@@ -437,11 +434,18 @@ module.exports = async function handler(req, res) {
         }
 
         const lastRefresh = await kvGet(LAST_REFRESH_KEY);
+        const totalMeta = Object.keys(data.metadata || {}).length;
+        const totalCounts = Object.keys(data.sequences || {}).length;
 
         return res.status(200).json({
             ...buildDashboardResponse(data),
             lastRefresh,
-            _meta: { source },
+            _meta: {
+                source,
+                total: totalMeta || totalCounts,
+                fetched: totalCounts,
+                partial: totalMeta > 0 && totalCounts < totalMeta,
+            },
         });
     } catch (err) {
         if (KV_URL) {

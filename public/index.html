@@ -294,34 +294,60 @@ async function loadPage() {
 }
 
 // ── Initial load: only runs when Redis is completely empty ──────────────────
-// Shows a loading status while populating the cache for the first time.
-// After this completes, all subsequent visits are instant.
+// Fire-and-forget the refresh, then poll Redis every 2s to show results
+// as they stream in. Much faster feedback than waiting 50s for refresh.
 
 async function initialLoad() {
     var btn = document.getElementById('btn-refresh');
     btn.disabled = true;
-    var retries = 0;
+    var cycles = 0;
 
     try {
-        while (retries <= 20) {
-            var res = await fetch('/api/sequences?refresh=1');
-            var data;
-            try { data = await res.json(); } catch (_) { break; }
+        while (cycles <= 20) {
+            cycles++;
 
-            if (data && data.sequences && data.sequences.length > 0) {
-                if (data.threshold) THRESHOLD = data.threshold;
-                renderResults(data.sequences);
-                updateTimestamp(data.lastUpdated, data.lastRefresh);
+            // Fire off a refresh cycle (runs up to 50s, saves to Redis after every batch)
+            var refreshDone = false;
+            var refreshResult = null;
+            fetch('/api/sequences?refresh=1')
+                .then(function(r) { return r.json(); })
+                .then(function(d) { refreshResult = d; refreshDone = true; })
+                .catch(function() { refreshDone = true; });
+
+            // Poll Redis every 2s while refresh is running — show sequences ASAP
+            while (!refreshDone) {
+                await new Promise(function(r) { setTimeout(r, 2000); });
+                try {
+                    var pollRes = await fetch('/api/sequences');
+                    var pollData = await pollRes.json();
+                    if (pollData && pollData.sequences && pollData.sequences.length > 0) {
+                        if (pollData.threshold) THRESHOLD = pollData.threshold;
+                        renderResults(pollData.sequences);
+                        updateTimestamp(pollData.lastUpdated, pollData.lastRefresh);
+                    }
+                    var pm = (pollData && pollData._meta) || {};
+                    var loaded = pollData.sequences ? pollData.sequences.length : 0;
+                    var total = pm.total || '?';
+                    setStatus('info', 'Loading sequences... (' + loaded + '/' + total + ')');
+                } catch (_) {}
             }
 
-            var meta = (data && data._meta) || {};
-            if (!meta.partial) { clearStatus(); return; }
+            // Refresh finished — render its final result
+            if (refreshResult && refreshResult.sequences && refreshResult.sequences.length > 0) {
+                if (refreshResult.threshold) THRESHOLD = refreshResult.threshold;
+                renderResults(refreshResult.sequences);
+                updateTimestamp(refreshResult.lastUpdated, refreshResult.lastRefresh);
+            }
 
-            retries++;
-            var waitMs = meta.rateLimited ? (meta.retryAfterMs || 30000) : 2000;
-            var fetched = meta.fetched || 0;
-            var total = meta.total || '?';
-            setStatus('info', 'Loading sequences... (' + fetched + '/' + total + ')');
+            var meta = (refreshResult && refreshResult._meta) || {};
+            if (!meta.partial) {
+                clearStatus();
+                return;
+            }
+
+            // Still partial — brief wait then start next refresh cycle
+            var waitMs = meta.rateLimited ? (meta.retryAfterMs || 15000) : 2000;
+            setStatus('info', 'Loading sequences... (' + (meta.fetched || 0) + '/' + (meta.total || '?') + ')');
             await new Promise(function(r) { setTimeout(r, waitMs); });
         }
         clearStatus();
