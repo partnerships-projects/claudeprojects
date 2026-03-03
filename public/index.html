@@ -373,7 +373,7 @@ function triggerRefresh() {
     btn.disabled = true;
     setStatus('info', 'Refreshing in background...');
 
-    fetch('/api/sequences?refresh=1')
+    fetch('/api/sequences?refresh=1&force=1')
         .then(function(r) { return r.json(); })
         .then(function(data) {
             if (data && data.sequences && data.sequences.length > 0) {

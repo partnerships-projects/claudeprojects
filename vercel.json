@@ -5,5 +5,11 @@
     "api/sequences.js": {
       "maxDuration": 60
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/sequences?refresh=1&force=1",
+      "schedule": "0 8 * * *"
+    }
+  ]
 }

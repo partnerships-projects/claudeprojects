@@ -122,7 +122,7 @@ async function fetchStat(sequenceId) {
 //   6. Release lock
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function refreshCache() {
+async function refreshCache(force = false) {
     const acquired = await kvSetNX(LOCK_KEY, Date.now(), LOCK_TTL);
     if (!acquired) return { ok: false, reason: 'locked' };
 
@@ -167,11 +167,17 @@ async function refreshCache() {
 
         for (const seq of activeSequences) {
             metadata[seq.id] = { name: seq.name, client: seq.client };
-            if (existingCounts[seq.id] != null) {
+            if (!force && existingCounts[seq.id] != null) {
+                // Incremental: carry over existing count, don't re-fetch
                 counts[seq.id] = existingCounts[seq.id];
                 carriedOver++;
             } else {
+                // Force or new: queue for re-fetch
                 pending.push(seq.id);
+                // Keep old count as fallback (overwritten when fresh count arrives)
+                if (existingCounts[seq.id] != null) {
+                    counts[seq.id] = existingCounts[seq.id];
+                }
             }
         }
 
@@ -379,9 +385,11 @@ module.exports = async function handler(req, res) {
         });
     }
 
-    // ── ?refresh=1 — synchronous incremental refresh ────────────────────
+    // ── ?refresh=1 — synchronous refresh ────────────────────────────────
+    // ?force=1 — re-fetch ALL counts (used by cron + manual Refresh button)
     if (req.query.refresh === '1') {
-        const result = await refreshCache();
+        const force = req.query.force === '1';
+        const result = await refreshCache(force);
 
         if (!result.ok) {
             if (result.reason === 'locked') {
