@@ -340,14 +340,18 @@ async function initialLoad() {
             }
 
             var meta = (refreshResult && refreshResult._meta) || {};
-            if (!meta.partial) {
+
+            // All done? (only trust partial:false when we actually got a valid response)
+            if (refreshResult && meta.partial === false) {
                 clearStatus();
                 return;
             }
 
-            // Still partial — brief wait then start next refresh cycle
-            var waitMs = meta.rateLimited ? (meta.retryAfterMs || 15000) : 2000;
-            setStatus('info', 'Loading sequences... (' + (meta.fetched || 0) + '/' + (meta.total || '?') + ')');
+            // Still partial or error — wait then start next refresh cycle
+            var waitMs = meta.rateLimited ? (meta.retryAfterMs || 30000) : (refreshResult ? 2000 : 5000);
+            var fetched = meta.fetched || (refreshResult && refreshResult.sequences ? refreshResult.sequences.length : 0);
+            var total = meta.total || '?';
+            setStatus('info', 'Loading sequences... (' + fetched + '/' + total + ')');
             await new Promise(function(r) { setTimeout(r, waitMs); });
         }
         clearStatus();
@@ -357,44 +361,28 @@ async function initialLoad() {
 }
 
 // ── Silent background revalidation ──────────────────────────────────────────
-// Runs after page render. Completely invisible to the user — no status bars,
-// no spinners. Updates Redis in the background; silently re-renders the table
-// only if data actually changed.
+// Single refresh call — just checks if data changed. Does NOT loop or block.
+// Does NOT set isRefreshing — so the manual Refresh button always works.
 
 async function silentRefresh() {
-    if (isRefreshing) return;
-    isRefreshing = true;
-
     try {
-        var retries = 0;
-        while (retries <= 20) {
-            var res = await fetch('/api/sequences?refresh=1');
-            var data;
-            try { data = await res.json(); } catch (_) { break; }
+        var res = await fetch('/api/sequences?refresh=1');
+        var data;
+        try { data = await res.json(); } catch (_) { return; }
 
-            // Silently update the table if we got new/different data
-            if (data && data.sequences && data.sequences.length > 0) {
-                if (data.threshold) THRESHOLD = data.threshold;
-                renderResults(data.sequences);
-                updateTimestamp(data.lastUpdated, data.lastRefresh);
-            }
-
-            var meta = (data && data._meta) || {};
-            if (!meta.partial) return;
-
-            retries++;
-            var waitMs = meta.rateLimited ? (meta.retryAfterMs || 30000) : 2000;
-            await new Promise(function(r) { setTimeout(r, waitMs); });
+        // Silently update the table if we got new/different data
+        if (data && data.sequences && data.sequences.length > 0) {
+            if (data.threshold) THRESHOLD = data.threshold;
+            renderResults(data.sequences);
+            updateTimestamp(data.lastUpdated, data.lastRefresh);
         }
     } catch (_) {
         // Silent — don't show errors for background revalidation
-    } finally {
-        isRefreshing = false;
     }
 }
 
 // ── Manual refresh button ───────────────────────────────────────────────────
-// User-initiated: shows a subtle status, then goes silent.
+// User-initiated: shows status, loops until all sequences have counts.
 
 async function triggerRefresh() {
     if (isRefreshing) return;
@@ -409,7 +397,11 @@ async function triggerRefresh() {
         while (retries <= 20) {
             var res = await fetch('/api/sequences?refresh=1');
             var data;
-            try { data = await res.json(); } catch (_) { break; }
+            try { data = await res.json(); } catch (_) {
+                retries++;
+                await new Promise(function(r) { setTimeout(r, 5000); });
+                continue;
+            }
 
             if (data && data.sequences && data.sequences.length > 0) {
                 if (data.threshold) THRESHOLD = data.threshold;
@@ -418,7 +410,7 @@ async function triggerRefresh() {
             }
 
             var meta = (data && data._meta) || {};
-            if (!meta.partial) {
+            if (data && meta.partial === false) {
                 setStatus('success', 'All sequences updated.');
                 setTimeout(clearStatus, 3000);
                 return;

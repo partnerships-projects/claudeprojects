@@ -211,9 +211,14 @@ async function refreshCache() {
             if (batchHits === 0) {
                 consecutiveEmpty++;
                 if (throttled && consecutiveEmpty >= 3) {
-                    // Still failing in throttled mode — stop for this cycle
-                    rateLimited = true;
-                    break;
+                    // Rate limit still active — wait 10s for it to reset
+                    if (Date.now() + 10000 < deadline) {
+                        await sleep(10000);
+                        consecutiveEmpty = 0;  // reset counter and try again
+                    } else {
+                        rateLimited = true;
+                        break;
+                    }
                 }
                 if (!throttled && consecutiveEmpty >= 2) {
                     // Switch from burst → throttle mode
@@ -254,7 +259,7 @@ async function refreshCache() {
             partial: totalWithCounts < activeSequences.length,
             rateLimited,
             throttled,
-            retryAfterMs: rateLimited ? 15000 : 2000,
+            retryAfterMs: rateLimited ? 30000 : 2000,
             carriedOver,
             newlyFetched,
             skippedPagination,
