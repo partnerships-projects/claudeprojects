@@ -255,7 +255,9 @@ function setAutoRefresh() {
     }
 }
 
-// ── Load page: instant read from Redis cache, never blocks ──────────────────
+// ── Load page: instant read from Redis cache ────────────────────────────────
+// Redis always has complete data (no nulls/dashes). Render immediately.
+// Then kick off a silent background revalidation — no status bars, no spinners.
 
 async function loadPage() {
     // Handle ?reset=1 in the page URL
@@ -279,28 +281,25 @@ async function loadPage() {
         if (hasSequences) {
             renderResults(data.sequences);
             updateTimestamp(data.lastUpdated, data.lastRefresh);
+            // Silent background revalidation — no UI disruption
+            silentRefresh();
         } else {
-            // Empty cache on first-ever visit — kick off one background refresh
-            setStatus('info', 'No cached data yet. Fetching from SalesHandy in background...');
-            triggerRefresh();
+            // First-ever visit — cache is empty, need to populate
+            setStatus('info', 'Loading sequences from SalesHandy for the first time...');
+            await initialLoad();
         }
     } catch (e) {
         setStatus('error', 'Failed to load cached data.');
     }
 }
 
-// ── Background refresh: silent, no spinners, no blocking ────────────────────
-// Loops ?refresh=1 until all stats are fetched (handles rate limits / partials).
-// UI just shows a subtle text status — no loader, no countdown.
+// ── Initial load: only runs when Redis is completely empty ──────────────────
+// Shows a loading status while populating the cache for the first time.
+// After this completes, all subsequent visits are instant.
 
-async function triggerRefresh() {
-    if (isRefreshing) return;
-    isRefreshing = true;
-
+async function initialLoad() {
     var btn = document.getElementById('btn-refresh');
     btn.disabled = true;
-    setStatus('info', 'Refreshing in background...');
-
     var retries = 0;
 
     try {
@@ -309,7 +308,6 @@ async function triggerRefresh() {
             var data;
             try { data = await res.json(); } catch (_) { break; }
 
-            // Render whatever we got
             if (data && data.sequences && data.sequences.length > 0) {
                 if (data.threshold) THRESHOLD = data.threshold;
                 renderResults(data.sequences);
@@ -317,21 +315,94 @@ async function triggerRefresh() {
             }
 
             var meta = (data && data._meta) || {};
+            if (!meta.partial) { clearStatus(); return; }
 
-            // All done?
+            retries++;
+            var waitMs = meta.rateLimited ? (meta.retryAfterMs || 30000) : 2000;
+            var fetched = meta.fetched || 0;
+            var total = meta.total || '?';
+            setStatus('info', 'Loading sequences... (' + fetched + '/' + total + ')');
+            await new Promise(function(r) { setTimeout(r, waitMs); });
+        }
+        clearStatus();
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+// ── Silent background revalidation ──────────────────────────────────────────
+// Runs after page render. Completely invisible to the user — no status bars,
+// no spinners. Updates Redis in the background; silently re-renders the table
+// only if data actually changed.
+
+async function silentRefresh() {
+    if (isRefreshing) return;
+    isRefreshing = true;
+
+    try {
+        var retries = 0;
+        while (retries <= 20) {
+            var res = await fetch('/api/sequences?refresh=1');
+            var data;
+            try { data = await res.json(); } catch (_) { break; }
+
+            // Silently update the table if we got new/different data
+            if (data && data.sequences && data.sequences.length > 0) {
+                if (data.threshold) THRESHOLD = data.threshold;
+                renderResults(data.sequences);
+                updateTimestamp(data.lastUpdated, data.lastRefresh);
+            }
+
+            var meta = (data && data._meta) || {};
+            if (!meta.partial) return;
+
+            retries++;
+            var waitMs = meta.rateLimited ? (meta.retryAfterMs || 30000) : 2000;
+            await new Promise(function(r) { setTimeout(r, waitMs); });
+        }
+    } catch (_) {
+        // Silent — don't show errors for background revalidation
+    } finally {
+        isRefreshing = false;
+    }
+}
+
+// ── Manual refresh button ───────────────────────────────────────────────────
+// User-initiated: shows a subtle status, then goes silent.
+
+async function triggerRefresh() {
+    if (isRefreshing) return;
+    isRefreshing = true;
+
+    var btn = document.getElementById('btn-refresh');
+    btn.disabled = true;
+    setStatus('info', 'Refreshing...');
+
+    try {
+        var retries = 0;
+        while (retries <= 20) {
+            var res = await fetch('/api/sequences?refresh=1');
+            var data;
+            try { data = await res.json(); } catch (_) { break; }
+
+            if (data && data.sequences && data.sequences.length > 0) {
+                if (data.threshold) THRESHOLD = data.threshold;
+                renderResults(data.sequences);
+                updateTimestamp(data.lastUpdated, data.lastRefresh);
+            }
+
+            var meta = (data && data._meta) || {};
             if (!meta.partial) {
-                clearStatus();
+                setStatus('success', 'All sequences updated.');
+                setTimeout(clearStatus, 3000);
                 return;
             }
 
-            // Partial — wait then continue
             retries++;
             var waitMs = meta.rateLimited ? (meta.retryAfterMs || 30000) : 2000;
-            setStatus('info', 'Refreshing in background... (' + (meta.fetched || 0) + '/' + (meta.total || '?') + ' stats)');
+            setStatus('info', 'Refreshing... (' + (meta.fetched || 0) + '/' + (meta.total || '?') + ')');
             await new Promise(function(r) { setTimeout(r, waitMs); });
         }
-
-        // Exhausted retries — still show whatever we have
         clearStatus();
     } catch (err) {
         clearStatus();

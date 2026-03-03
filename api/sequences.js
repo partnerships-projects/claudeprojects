@@ -2,21 +2,23 @@
 // Vercel Serverless Function — SalesHandy "Not Contacted" Dashboard
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// Architecture: stale-while-revalidate with incremental stats fetching.
+// Architecture: Redis always holds complete data (no nulls).
 //
-//   GET /api/sequences            → instant Redis read; flags needsRefresh
-//   GET /api/sequences?refresh=1  → synchronous incremental refresh
+//   GET /api/sequences            → instant Redis read (all sequences + counts)
+//   GET /api/sequences?refresh=1  → incremental refresh, returns updated data
 //   GET /api/sequences?reset=1    → clear all Redis keys
 //   GET /api/sequences?debug=1    → raw pagination debug
 //
 // Cache (Redis "saleshandy:not_contacted:active_sequences"):
-//   { last_updated, sequences: { id: count|null }, metadata: { id: { name, client } } }
+//   { last_updated, sequences: { id: count }, metadata: { id: { name, client } } }
+//   sequences{} only has entries with real counts — never nulls.
+//   metadata{} has ALL active sequences (so pagination-skip knows the full list).
 //
 // Refresh is incremental:
 //   - Carries over already-fetched counts from previous cache.
-//   - Fetches stats only for sequences with null counts.
-//   - Saves progress to Redis after each batch (crash-safe).
-//   - Stops at 50s wall clock; frontend auto-retries for the rest.
+//   - Fetches stats only for sequences not yet in cache.
+//   - Saves progress after each batch (only complete entries).
+//   - Stops at 50s wall clock; frontend silently retries for the rest.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const {
@@ -155,7 +157,9 @@ async function refreshCache() {
             return { ok: false, reason: 'no_active_sequences' };
         }
 
-        // Build maps — carry over successful counts, queue the rest
+        // Build maps — carry over existing counts, queue sequences without counts.
+        // INVARIANT: counts{} never contains null values — only real numbers.
+        // metadata{} always has ALL active sequences (so skippedPagination works).
         const counts = {};
         const metadata = {};
         const pending = [];
@@ -167,19 +171,9 @@ async function refreshCache() {
                 counts[seq.id] = existingCounts[seq.id];
                 carriedOver++;
             } else {
-                counts[seq.id] = null;
                 pending.push(seq.id);
             }
         }
-
-        // Save initial state immediately — all 80+ sequences visible right away.
-        // Sequences with carried-over counts show their numbers; the rest show "—"
-        // until the refresh fills them in.
-        await kvSet(CACHE_KEY, {
-            last_updated: new Date().toISOString(),
-            sequences: counts,
-            metadata,
-        }, CACHE_TTL);
 
         // Two-phase fetch: burst then throttle.
         //   Burst:    CONCURRENCY parallel, BATCH_DELAY gap — fast until rate limit.
@@ -253,7 +247,7 @@ async function refreshCache() {
         // Final timestamp
         await kvSet(LAST_REFRESH_KEY, new Date().toISOString(), CACHE_TTL);
 
-        const totalWithCounts = Object.values(counts).filter(c => c !== null).length;
+        const totalWithCounts = Object.keys(counts).length;
 
         return {
             ok: true,
@@ -295,7 +289,10 @@ async function getDashboardData() {
 
 function buildDashboardResponse(data) {
     const sequences = [];
+    // Only return sequences that have a fetched count (counts{} has no nulls).
+    // metadata{} may have more entries (sequences still pending).
     for (const [id, count] of Object.entries(data.sequences || {})) {
+        if (count == null) continue;  // safety net
         const meta = data.metadata?.[id] || {};
         sequences.push({
             id,
@@ -389,8 +386,8 @@ module.exports = async function handler(req, res) {
                 // Another refresh is running — return current cache
                 const cached = await kvGet(CACHE_KEY);
                 if (cached) {
-                    const totalWithCounts = Object.values(cached.sequences || {}).filter(c => c !== null).length;
-                    const total = Object.keys(cached.sequences || {}).length;
+                    const totalWithCounts = Object.keys(cached.sequences || {}).length;
+                    const total = Object.keys(cached.metadata || {}).length || totalWithCounts;
                     return res.status(200).json({
                         ...buildDashboardResponse(cached),
                         lastRefresh: await kvGet(LAST_REFRESH_KEY),
