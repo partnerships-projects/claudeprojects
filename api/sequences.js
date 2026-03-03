@@ -172,8 +172,14 @@ async function refreshCache() {
             }
         }
 
-        // Don't save initial null state — keep existing cache intact until
-        // we actually have new counts. Frontend serves old data in the meantime.
+        // Save initial state immediately — all 80+ sequences visible right away.
+        // Sequences with carried-over counts show their numbers; the rest show "—"
+        // until the refresh fills them in.
+        await kvSet(CACHE_KEY, {
+            last_updated: new Date().toISOString(),
+            sequences: counts,
+            metadata,
+        }, CACHE_TTL);
 
         // Two-phase fetch: burst then throttle.
         //   Burst:    CONCURRENCY parallel, BATCH_DELAY gap — fast until rate limit.
@@ -290,7 +296,6 @@ async function getDashboardData() {
 function buildDashboardResponse(data) {
     const sequences = [];
     for (const [id, count] of Object.entries(data.sequences || {})) {
-        if (count === null) continue;   // skip sequences still waiting for stats
         const meta = data.metadata?.[id] || {};
         sequences.push({
             id,
