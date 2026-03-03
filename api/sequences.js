@@ -35,6 +35,7 @@ const {
 // fetchActiveSequences()
 // Bulk fetch via paginated /v1/sequences endpoint (fast, not rate-limited).
 // Returns only active sequences (progress === 1).
+// Budget: max ~15s for pagination so stats still have 35s in the 50s window.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function extractTotalPages(data) {
@@ -42,21 +43,23 @@ function extractTotalPages(data) {
         ?? data.meta?.totalPages ?? data.meta?.last_page ?? null;
 }
 
-async function fetchPage(page) {
-    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+async function fetchPage(page, deadline) {
+    // One retry only (not MAX_RETRIES) — pagination must stay fast.
+    for (let attempt = 0; attempt < 2; attempt++) {
+        if (deadline && Date.now() >= deadline) return null;
         try {
             return await shApi('GET', `/v1/sequences?page=${page}`, null, PAGE_TIMEOUT);
         } catch (err) {
-            if (attempt < MAX_RETRIES - 1) {
-                await sleep(err.isRateLimit ? 3000 : 1000);
-            }
+            if (attempt === 0) await sleep(err.isRateLimit ? 2000 : 500);
         }
     }
     return null;
 }
 
 async function fetchActiveSequences() {
-    const firstData = await fetchPage(1);
+    const paginationDeadline = Date.now() + 15000; // 15s budget
+
+    const firstData = await fetchPage(1, paginationDeadline);
     if (!firstData) return [];
 
     const firstItems = extractItems(firstData);
@@ -66,14 +69,16 @@ async function fetchActiveSequences() {
     const totalPages = extractTotalPages(firstData);
     const maxPage = totalPages != null ? Math.min(totalPages, 30) : 30;
 
-    // Fetch remaining pages in batches of 3 (conservative parallelism).
-    // Unlike before: uses totalPages so we never stop early, and fetchPage
-    // retries failures so individual pages aren't silently dropped.
+    // Fetch remaining pages in parallel batches of 3.
+    // Uses totalPages so we never stop early, and fetchPage retries once
+    // on failure so individual pages aren't silently dropped.
     for (let start = 2; start <= maxPage; start += 3) {
+        if (Date.now() >= paginationDeadline) break;
+
         const pages = [];
         for (let p = start; p < start + 3 && p <= maxPage; p++) pages.push(p);
 
-        const results = await Promise.all(pages.map(p => fetchPage(p)));
+        const results = await Promise.all(pages.map(p => fetchPage(p, paginationDeadline)));
 
         let batchItems = 0;
         for (const data of results) {

@@ -374,7 +374,10 @@ function triggerRefresh() {
     setStatus('info', 'Refreshing in background...');
 
     fetch('/api/sequences?refresh=1')
-        .then(function(r) { return r.json(); })
+        .then(function(r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.json();
+        })
         .then(function(data) {
             if (data && data.sequences && data.sequences.length > 0) {
                 if (data.threshold) THRESHOLD = data.threshold;
@@ -386,9 +389,14 @@ function triggerRefresh() {
             setStatus('success', 'Updated — ' + count + ' sequences.');
             setTimeout(clearStatus, 3000);
         })
-        .catch(function() {
-            setStatus('error', 'Refresh failed.');
-            setTimeout(clearStatus, 3000);
+        .catch(function(err) {
+            var msg = (err && err.message) || '';
+            if (msg.indexOf('504') >= 0 || msg.indexOf('502') >= 0) {
+                setStatus('error', 'Refresh timed out — try again in 30s.');
+            } else {
+                setStatus('error', 'Refresh failed: ' + msg);
+            }
+            setTimeout(clearStatus, 5000);
         })
         .finally(function() {
             isRefreshing = false;
