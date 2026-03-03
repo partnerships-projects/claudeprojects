@@ -172,13 +172,8 @@ async function refreshCache() {
             }
         }
 
-        // Save initial state immediately — frontend can poll and see all sequences
-        // with null counts while stats are being fetched.
-        await kvSet(CACHE_KEY, {
-            last_updated: new Date().toISOString(),
-            sequences: counts,
-            metadata,
-        }, CACHE_TTL);
+        // Don't save initial null state — keep existing cache intact until
+        // we actually have new counts. Frontend serves old data in the meantime.
 
         // Two-phase fetch: burst then throttle.
         //   Burst:    CONCURRENCY parallel, BATCH_DELAY gap — fast until rate limit.
