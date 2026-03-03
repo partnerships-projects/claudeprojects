@@ -140,9 +140,9 @@
                 Auto-refresh:
                 <select id="refresh-interval" onchange="setAutoRefresh()">
                     <option value="0">Off</option>
-                    <option value="60">1 min</option>
-                    <option value="300" selected>5 min</option>
-                    <option value="900">15 min</option>
+                    <option value="3600">1 hour</option>
+                    <option value="10800" selected>3 hours</option>
+                    <option value="21600">6 hours</option>
                 </select>
             </div>
             <button class="btn btn-primary" id="btn-refresh" onclick="triggerRefresh()">Refresh</button>
@@ -215,13 +215,18 @@
 var THRESHOLD = 2000;
 var refreshTimer = null;
 var isRefreshing = false;
-var refreshRetries = 0;
 var allSequences = [];
 
 function setStatus(type, msg) {
     var bar = document.getElementById('status-bar');
     bar.className = 'status-bar ' + type;
     bar.textContent = msg;
+}
+
+function clearStatus() {
+    var bar = document.getElementById('status-bar');
+    bar.className = 'status-bar';
+    bar.textContent = '';
 }
 
 function fmtNum(n) {
@@ -236,8 +241,7 @@ function escapeHtml(str) {
 }
 
 function updateTimestamp(lastUpdated, lastRefresh) {
-    var now = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    var parts = ['Page loaded: ' + now];
+    var parts = [];
     if (lastUpdated) parts.push('Data: ' + new Date(lastUpdated).toLocaleString());
     if (lastRefresh) parts.push('Last refresh: ' + new Date(lastRefresh).toLocaleString());
     document.getElementById('last-updated').textContent = parts.join(' — ');
@@ -247,34 +251,13 @@ function setAutoRefresh() {
     if (refreshTimer) clearInterval(refreshTimer);
     var seconds = Number(document.getElementById('refresh-interval').value);
     if (seconds > 0) {
-        refreshTimer = setInterval(function() { loadPage(); }, seconds * 1000);
+        refreshTimer = setInterval(function() { triggerRefresh(); }, seconds * 1000);
     }
 }
 
-// ── Poll cache for latest data and render it ────────────────────────────────
-
-async function pollAndRender() {
-    try {
-        var res = await fetch('/api/sequences');
-        var data;
-        try { data = await res.json(); } catch (_) { return null; }
-        if (!res.ok) return null;
-        if (data.threshold) THRESHOLD = data.threshold;
-
-        if (data.sequences && data.sequences.length > 0) {
-            renderResults(data.sequences);
-            updateTimestamp(data.lastUpdated, data.lastRefresh);
-        }
-        return data;
-    } catch (e) { return null; }
-}
-
-// ── Load page: instant read from cache, trigger refresh if stale ────────────
+// ── Load page: instant read from Redis cache, never blocks ──────────────────
 
 async function loadPage() {
-    var btn = document.getElementById('btn-refresh');
-    btn.disabled = true;
-
     // Handle ?reset=1 in the page URL
     var params = new URLSearchParams(window.location.search);
     if (params.get('reset') === '1') {
@@ -285,37 +268,30 @@ async function loadPage() {
     }
 
     try {
-        var data = await pollAndRender();
-        if (!data) throw new Error('Failed to load data');
+        var res = await fetch('/api/sequences');
+        var data;
+        try { data = await res.json(); } catch (_) { return; }
+        if (!res.ok) return;
+        if (data.threshold) THRESHOLD = data.threshold;
 
         var hasSequences = data.sequences && data.sequences.length > 0;
-        var meta = data._meta || {};
 
-        if (meta.needsRefresh && !isRefreshing) {
-            var withCounts = meta.withCounts || 0;
-            var total = meta.activeSequences || 0;
-            if (hasSequences && total > 0 && withCounts < total) {
-                setStatus('info', 'Loaded ' + withCounts + '/' + total + ' counts. Fetching remaining...');
-            } else if (hasSequences) {
-                setStatus('info', 'Showing cached data. Refreshing from SalesHandy...');
-            } else {
-                setStatus('info', 'Fetching data from SalesHandy...');
-            }
-            triggerRefresh();
-        } else if (hasSequences) {
-            setStatus('success', 'Loaded ' + data.sequences.length + ' active sequences.');
+        if (hasSequences) {
+            renderResults(data.sequences);
+            updateTimestamp(data.lastUpdated, data.lastRefresh);
         } else {
-            setStatus('info', 'No sequences with uncontacted prospects found.');
+            // Empty cache on first-ever visit — kick off one background refresh
+            setStatus('info', 'No cached data yet. Fetching from SalesHandy in background...');
+            triggerRefresh();
         }
-    } catch (err) {
-        setStatus('error', 'Error: ' + err.message);
-    } finally {
-        document.getElementById('loader').classList.remove('active');
-        if (!isRefreshing) btn.disabled = false;
+    } catch (e) {
+        setStatus('error', 'Failed to load cached data.');
     }
 }
 
-// ── Trigger refresh: fires request in background, polls cache for live updates
+// ── Background refresh: silent, no spinners, no blocking ────────────────────
+// Loops ?refresh=1 until all stats are fetched (handles rate limits / partials).
+// UI just shows a subtle text status — no loader, no countdown.
 
 async function triggerRefresh() {
     if (isRefreshing) return;
@@ -323,42 +299,19 @@ async function triggerRefresh() {
 
     var btn = document.getElementById('btn-refresh');
     btn.disabled = true;
-    document.getElementById('loader').classList.add('active');
-    setStatus('info', 'Fetching stats from SalesHandy...');
+    setStatus('info', 'Refreshing in background...');
+
+    var retries = 0;
 
     try {
-        // Loop: fire refresh, poll while it runs, repeat if partial
-        while (refreshRetries <= 20) {
+        while (retries <= 20) {
+            var res = await fetch('/api/sequences?refresh=1');
+            var data;
+            try { data = await res.json(); } catch (_) { break; }
 
-            // Fire ?refresh=1 in background — don't block on it
-            var refreshDone = false;
-            var refreshData = null;
-            fetch('/api/sequences?refresh=1')
-                .then(function(r) { return r.json(); })
-                .then(function(d) { refreshData = d; })
-                .catch(function() { refreshData = null; })
-                .finally(function() { refreshDone = true; });
-
-            // Poll cache every 2s while refresh runs
-            while (!refreshDone) {
-                await new Promise(function(r) { setTimeout(r, 2000); });
-                if (refreshDone) break;
-
-                var pollData = await pollAndRender();
-                if (pollData) {
-                    var m = pollData._meta || {};
-                    var total = m.activeSequences || 0;
-                    var withCounts = m.withCounts || 0;
-                    if (total > 0) {
-                        var pct = Math.round(withCounts / total * 100);
-                        setStatus('info', 'Loading stats: ' + withCounts + '/' + total + ' (' + pct + '%)...');
-                    }
-                }
-            }
-
-            // Refresh request completed — render its final response
-            var data = refreshData;
+            // Render whatever we got
             if (data && data.sequences && data.sequences.length > 0) {
+                if (data.threshold) THRESHOLD = data.threshold;
                 renderResults(data.sequences);
                 updateTimestamp(data.lastUpdated, data.lastRefresh);
             }
@@ -367,44 +320,23 @@ async function triggerRefresh() {
 
             // All done?
             if (!meta.partial) {
-                refreshRetries = 0;
-                var hasData = data && data.sequences && data.sequences.length > 0;
-                setStatus('success', hasData
-                    ? 'Loaded all ' + data.sequences.length + ' sequence stats.'
-                    : 'No active sequences found.');
+                clearStatus();
                 return;
             }
 
-            // Partial — pause before next cycle (longer if rate-limited)
-            refreshRetries++;
-            var got = meta.fetched || 0;
-            var total = meta.total || '?';
-            var pct = total > 0 ? Math.round(got / total * 100) : 0;
-            var retryMs = meta.retryAfterMs || 2000;
-
-            if (retryMs > 5000) {
-                // Show countdown while waiting for rate limit to cool down
-                var endTime = Date.now() + retryMs;
-                while (Date.now() < endTime) {
-                    var remaining = Math.ceil((endTime - Date.now()) / 1000);
-                    setStatus('info', 'Loaded ' + got + '/' + total + ' (' + pct + '%). Cooling down — next batch in ' + remaining + 's...');
-                    await new Promise(function(r) { setTimeout(r, 1000); });
-                    await pollAndRender();
-                }
-            } else {
-                setStatus('info', 'Loading stats: ' + got + '/' + total + ' (' + pct + '%). Continuing...');
-                await new Promise(function(r) { setTimeout(r, retryMs); });
-            }
+            // Partial — wait then continue
+            retries++;
+            var waitMs = meta.rateLimited ? (meta.retryAfterMs || 30000) : 2000;
+            setStatus('info', 'Refreshing in background... (' + (meta.fetched || 0) + '/' + (meta.total || '?') + ' stats)');
+            await new Promise(function(r) { setTimeout(r, waitMs); });
         }
 
-        // Exhausted retries
-        setStatus('info', 'Stats partially loaded. Click Refresh to continue.');
+        // Exhausted retries — still show whatever we have
+        clearStatus();
     } catch (err) {
-        setStatus('error', 'Refresh error: ' + err.message);
+        clearStatus();
     } finally {
         isRefreshing = false;
-        refreshRetries = 0;
-        document.getElementById('loader').classList.remove('active');
         btn.disabled = false;
     }
 }

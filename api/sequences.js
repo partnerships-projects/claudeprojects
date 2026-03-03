@@ -275,34 +275,17 @@ async function refreshCache() {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // getDashboardData()
-// Stale-while-revalidate:
-//   - No cache        → empty, frontend triggers ?refresh=1
-//   - Cache < 5 min   → fresh, return immediately
-//   - Cache has nulls  → incomplete, return + flag needsRefresh
-//   - Cache > 5 min   → stale, return + flag needsRefresh
+// Always returns cached data instantly. Frontend handles background refresh.
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function getDashboardData() {
     const cached = await kvGet(CACHE_KEY);
 
     if (!cached) {
-        return { data: null, source: 'empty', needsRefresh: true };
+        return { data: null, source: 'empty' };
     }
 
-    const age = Date.now() - new Date(cached.last_updated).getTime();
-
-    const hasNulls = cached.sequences &&
-        Object.values(cached.sequences).some(c => c === null);
-
-    if (age < CACHE_FRESH_MS && !hasNulls) {
-        return { data: cached, source: 'cache' };
-    }
-
-    return {
-        data: cached,
-        source: hasNulls ? 'incomplete' : 'stale',
-        needsRefresh: true,
-    };
+    return { data: cached, source: 'cache' };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -441,9 +424,9 @@ module.exports = async function handler(req, res) {
         });
     }
 
-    // ── Default: stale-while-revalidate cache read ──────────────────────
+    // ── Default: instant cache read ─────────────────────────────────────
     try {
-        const { data, source, needsRefresh } = await getDashboardData();
+        const { data, source } = await getDashboardData();
 
         if (!data) {
             return res.status(200).json({
@@ -451,22 +434,16 @@ module.exports = async function handler(req, res) {
                 threshold: THRESHOLD,
                 lastUpdated: null,
                 lastRefresh: null,
-                _meta: { source, needsRefresh: true },
+                _meta: { source },
             });
         }
 
         const lastRefresh = await kvGet(LAST_REFRESH_KEY);
-        const totalWithCounts = Object.values(data.sequences || {}).filter(c => c !== null).length;
 
         return res.status(200).json({
             ...buildDashboardResponse(data),
             lastRefresh,
-            _meta: {
-                source,
-                needsRefresh: !!needsRefresh,
-                activeSequences: Object.keys(data.sequences).length,
-                withCounts: totalWithCounts,
-            },
+            _meta: { source },
         });
     } catch (err) {
         if (KV_URL) {

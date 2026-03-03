@@ -24,9 +24,9 @@ const PAGE_TIMEOUT = 5000;       // 5s for pagination (fast-fail empty pages)
 const CONCURRENCY = 3;           // burst phase: 3 parallel stats requests
 const BATCH_DELAY = 300;         // 300ms between burst batches
 const THROTTLE_DELAY = 2000;     // 2s between calls in throttled mode (after rate limit)
-const CACHE_FRESH_MS = 5 * 60 * 1000;  // 5 min — cache considered fresh
+const CACHE_FRESH_MS = 6 * 60 * 60 * 1000;  // 6h — cache considered fresh
 const LOCK_TTL = 55;             // 55s — just under Vercel 60s limit
-const CACHE_TTL = 600;           // 10 min — Redis key safety-net expiry
+const CACHE_TTL = 86400;         // 24h — Redis key expiry (data persists)
 const WALL_CLOCK_LIMIT = 50000;  // 50s — hard stop before Vercel kills us
 const MAX_RETRIES = 3;           // per-call retry on 429 / timeout
 
