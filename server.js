@@ -38,43 +38,6 @@ const SALESHANDY_BASE = 'https://leo-open-api-gateway.saleshandy.com';
 const API_KEY = (process.env.SALESHANDY_API_KEY || '').trim();
 const THRESHOLD = Number(process.env.THRESHOLD) || 2000;
 
-// ── Proxy helper ─────────────────────────────────────────────────────────────
-
-function proxySaleshandy(targetPath, res) {
-    const url = new URL(targetPath, SALESHANDY_BASE);
-
-    const options = {
-        hostname: url.hostname,
-        port: 443,
-        path: url.pathname + url.search,
-        method: 'GET',
-        headers: {
-            'x-api-key': API_KEY,
-            'Authorization': `Bearer ${API_KEY}`,
-            'Content-Type': 'application/json',
-        },
-    };
-
-    const proxyReq = https.request(options, (proxyRes) => {
-        let body = '';
-        proxyRes.on('data', (chunk) => body += chunk);
-        proxyRes.on('end', () => {
-            res.writeHead(proxyRes.statusCode, {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*',
-            });
-            res.end(body);
-        });
-    });
-
-    proxyReq.on('error', (err) => {
-        res.writeHead(502, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: err.message }));
-    });
-
-    proxyReq.end();
-}
-
 // ── HTML page ────────────────────────────────────────────────────────────────
 
 function getHTML() {
@@ -318,7 +281,7 @@ async function fetchData() {
         }
         if (data.error) throw new Error(data.error);
         if (!data.sequences || data.sequences.length === 0) {
-            setStatus('error', 'No active sequences found. Try http://localhost:${PORT}/api/test to diagnose.');
+            setStatus('error', 'No active sequences found.');
             return;
         }
 
@@ -332,7 +295,7 @@ async function fetchData() {
             setStatus('success', 'Loaded ' + data.sequences.length + ' active sequences.');
         }
     } catch (err) {
-        setStatus('error', 'Error: ' + err.message + '. Visit /api/test to diagnose your API connection.');
+        setStatus('error', 'Error loading data. Check server logs.');
     } finally {
         document.getElementById('loader').classList.remove('active');
         btn.disabled = false;
@@ -628,37 +591,6 @@ const server = http.createServer(async (req, res) => {
         refreshCache();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ status: 'refresh started' }));
-        return;
-    }
-
-    // API: diagnostic — test the SalesHandy connection
-    if (url.pathname === '/api/test') {
-        const results = {};
-        try {
-            const data = await saleshandyGetOnce('/v1/sequences?page=1');
-            const items = data.payload || data.data || data.sequences || data.items || data.results
-                || (Array.isArray(data) ? data : []);
-            const sampleSeq = Array.isArray(items) && items.length > 0 ? items[0] : null;
-            results['/v1/sequences?page=1'] = {
-                status: 'ok',
-                topLevelKeys: Object.keys(data),
-                itemCount: Array.isArray(items) ? items.length : '(not array)',
-                sampleSequenceKeys: sampleSeq ? Object.keys(sampleSeq) : null,
-                sampleSequence: sampleSeq ? JSON.stringify(sampleSeq).slice(0, 800) : null,
-                raw: JSON.stringify(data).slice(0, 1000),
-            };
-        } catch (err) {
-            results['/v1/sequences?page=1'] = { status: 'error', message: err.message };
-        }
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ apiKey: API_KEY ? API_KEY.slice(0, 6) + '...' + API_KEY.slice(-4) : '(not set)', results }, null, 2));
-        return;
-    }
-
-    // Proxy raw SalesHandy API calls (for debugging)
-    if (url.pathname.startsWith('/proxy/')) {
-        const targetPath = url.pathname.replace('/proxy', '') + url.search;
-        proxySaleshandy(targetPath, res);
         return;
     }
 

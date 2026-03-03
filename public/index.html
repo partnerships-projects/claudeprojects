@@ -220,11 +220,62 @@
     </div>
 </div>
 
+<div id="auth-gate" class="hidden" style="position:fixed;inset:0;background:var(--bg-primary);z-index:999;display:flex;align-items:center;justify-content:center;">
+    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:14px;padding:40px;max-width:380px;width:90%;text-align:center;">
+        <h2 style="font-size:20px;margin-bottom:8px;">Dashboard Access</h2>
+        <p style="color:var(--text-secondary);font-size:13px;margin-bottom:24px;">Enter the dashboard password to continue.</p>
+        <input type="password" id="auth-input" placeholder="Password" style="width:100%;padding:12px 16px;font-size:14px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);outline:none;margin-bottom:12px;">
+        <div id="auth-error" style="color:var(--accent-red);font-size:13px;margin-bottom:12px;display:none;">Wrong password.</div>
+        <button class="btn btn-primary" style="width:100%;" onclick="tryAuth()">Enter</button>
+    </div>
+</div>
+
 <script>
 var THRESHOLD = 2000;
 var refreshTimer = null;
 var isRefreshing = false;
 var allSequences = [];
+
+// ── Auth ──────────────────────────────────────────────────────────────────
+function getToken() { return localStorage.getItem('dashToken') || ''; }
+function setToken(t) { localStorage.setItem('dashToken', t); }
+
+function apiUrl(path) {
+    var t = getToken();
+    if (!t) return path;
+    return path + (path.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(t);
+}
+
+function showAuthGate() {
+    var gate = document.getElementById('auth-gate');
+    gate.classList.remove('hidden');
+    gate.style.display = 'flex';
+    document.getElementById('auth-input').focus();
+}
+
+function tryAuth() {
+    var pw = document.getElementById('auth-input').value.trim();
+    if (!pw) return;
+    setToken(pw);
+    document.getElementById('auth-error').style.display = 'none';
+    // Test the token
+    fetch(apiUrl('/api/sequences'))
+        .then(function(r) {
+            if (r.status === 401) {
+                localStorage.removeItem('dashToken');
+                document.getElementById('auth-error').style.display = 'block';
+                return;
+            }
+            window.location.reload();
+        })
+        .catch(function() {
+            document.getElementById('auth-error').style.display = 'block';
+        });
+}
+
+document.getElementById('auth-input').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') tryAuth();
+});
 
 function setStatus(type, msg) {
     var bar = document.getElementById('status-bar');
@@ -272,13 +323,14 @@ async function loadPage() {
     var params = new URLSearchParams(window.location.search);
     if (params.get('reset') === '1') {
         try {
-            await fetch('/api/sequences?reset=1');
+            await fetch(apiUrl('/api/sequences?reset=1'));
             window.history.replaceState({}, '', window.location.pathname);
         } catch (_) {}
     }
 
     try {
-        var res = await fetch('/api/sequences');
+        var res = await fetch(apiUrl('/api/sequences'));
+        if (res.status === 401) { showAuthGate(); return; }
         var data;
         try { data = await res.json(); } catch (_) { return; }
         if (!res.ok) return;
@@ -313,7 +365,7 @@ async function populateCache() {
         for (var attempt = 0; attempt < 20; attempt++) {
             var data;
             try {
-                var res = await fetch('/api/sequences?refresh=1');
+                var res = await fetch(apiUrl('/api/sequences?refresh=1'));
                 data = await res.json();
             } catch (_) {
                 await new Promise(function(r) { setTimeout(r, 5000); });
@@ -358,7 +410,7 @@ async function populateCache() {
 // No spinners, no status bars, no blocking.
 
 function silentRefresh() {
-    fetch('/api/sequences?refresh=1')
+    fetch(apiUrl('/api/sequences?refresh=1'))
         .then(function(r) { return r.json(); })
         .then(function(data) {
             if (data && data.sequences && data.sequences.length > 0) {
@@ -382,7 +434,7 @@ function triggerRefresh() {
     btn.disabled = true;
     setStatus('info', 'Refreshing in background...');
 
-    fetch('/api/sequences?refresh=1')
+    fetch(apiUrl('/api/sequences?refresh=1'))
         .then(function(r) {
             if (!r.ok) throw new Error('HTTP ' + r.status);
             return r.json();

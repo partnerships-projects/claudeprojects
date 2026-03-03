@@ -22,7 +22,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const {
-    API_KEY, THRESHOLD, KV_URL,
+    API_KEY, THRESHOLD, KV_URL, DASHBOARD_SECRET, CRON_SECRET,
     CACHE_KEY, LOCK_KEY, LAST_REFRESH_KEY,
     PAGE_TIMEOUT, CONCURRENCY, BATCH_DELAY, THROTTLE_DELAY,
     CACHE_FRESH_MS, LOCK_TTL, CACHE_TTL, WALL_CLOCK_LIMIT,
@@ -30,6 +30,30 @@ const {
     kvGet, kvSet, kvDel, kvSetNX,
     extractItems,
 } = require('./_lib');
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Authentication
+// If DASHBOARD_SECRET is set, all requests must include it via:
+//   ?token=SECRET  or  Authorization: Bearer SECRET
+// Vercel cron uses CRON_SECRET via Authorization header.
+// If neither secret is configured, the dashboard is open (backwards compatible).
+// ─────────────────────────────────────────────────────────────────────────────
+
+function isAuthorized(req) {
+    if (!DASHBOARD_SECRET && !CRON_SECRET) return true;
+    const token = req.query?.token;
+    const bearer = (req.headers?.authorization || '').replace(/^Bearer\s+/i, '');
+    if (DASHBOARD_SECRET && (token === DASHBOARD_SECRET || bearer === DASHBOARD_SECRET)) return true;
+    if (CRON_SECRET && bearer === CRON_SECRET) return true;
+    return false;
+}
+
+function securityHeaders(res) {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'");
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // fetchActiveSequences()
@@ -353,15 +377,19 @@ function buildDashboardResponse(data) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 module.exports = async function handler(req, res) {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    securityHeaders(res);
     if (req.method === 'OPTIONS') { res.status(200).end(); return; }
 
     if (!API_KEY) {
-        return res.status(500).json({ error: 'SALESHANDY_API_KEY not set.' });
+        return res.status(500).json({ error: 'Server misconfigured.' });
     }
 
-    // ── ?reset=1 — clear all Redis keys ─────────────────────────────────
+    // ── Auth check ──────────────────────────────────────────────────────
+    if (!isAuthorized(req)) {
+        return res.status(401).json({ error: 'unauthorized' });
+    }
+
+    // ── ?reset=1 — clear all Redis keys (destructive) ───────────────────
     if (req.query.reset === '1' && KV_URL) {
         await Promise.all([
             kvDel(CACHE_KEY),
@@ -498,11 +526,11 @@ module.exports = async function handler(req, res) {
                 if (stale) {
                     return res.status(200).json({
                         ...buildDashboardResponse(stale),
-                        _meta: { source: 'error-stale', error: err.message },
+                        _meta: { source: 'error-stale' },
                     });
                 }
             } catch {}
         }
-        res.status(500).json({ error: err.message });
+        res.status(500).json({ error: 'Internal server error.' });
     }
 };

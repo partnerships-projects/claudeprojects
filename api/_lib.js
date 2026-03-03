@@ -9,6 +9,8 @@ const https = require('https');
 const SALESHANDY_BASE = 'https://leo-open-api-gateway.saleshandy.com';
 const API_KEY = process.env.SALESHANDY_API_KEY || '';
 const THRESHOLD = Number(process.env.THRESHOLD) || 2000;
+const DASHBOARD_SECRET = (process.env.DASHBOARD_SECRET || '').trim();
+const CRON_SECRET = (process.env.CRON_SECRET || '').trim();
 
 const KV_URL = process.env.UPSTASH_REDIS_REST_URL || '';
 const KV_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || '';
@@ -144,7 +146,7 @@ function extractItems(data) {
 // ── Exports ─────────────────────────────────────────────────────────────────
 
 module.exports = {
-    API_KEY, THRESHOLD, KV_URL,
+    API_KEY, THRESHOLD, KV_URL, DASHBOARD_SECRET, CRON_SECRET,
     CACHE_KEY, LOCK_KEY, LAST_REFRESH_KEY,
     HTTP_TIMEOUT, PAGE_TIMEOUT, CONCURRENCY, BATCH_DELAY, THROTTLE_DELAY,
     CACHE_FRESH_MS, LOCK_TTL, CACHE_TTL, WALL_CLOCK_LIMIT, MAX_RETRIES,
