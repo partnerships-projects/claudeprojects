@@ -181,6 +181,17 @@ async function refreshCache(force = false) {
             }
         }
 
+        // In force mode, fill gaps first (sequences with no count) before
+        // re-fetching stale ones — ensures all sequences are visible even
+        // if the 50s wall clock runs out before everything is re-fetched.
+        if (force) {
+            pending.sort((a, b) => {
+                const aHas = counts[a] != null ? 1 : 0;
+                const bHas = counts[b] != null ? 1 : 0;
+                return aHas - bHas;
+            });
+        }
+
         // Two-phase fetch: burst then throttle.
         //   Burst:    CONCURRENCY parallel, BATCH_DELAY gap — fast until rate limit.
         //   Throttle: 1 sequential, THROTTLE_DELAY gap — stays under rate limit.
