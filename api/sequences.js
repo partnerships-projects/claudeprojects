@@ -295,6 +295,7 @@ async function getDashboardData() {
 function buildDashboardResponse(data) {
     const sequences = [];
     for (const [id, count] of Object.entries(data.sequences || {})) {
+        if (count === null) continue;   // skip sequences still waiting for stats
         const meta = data.metadata?.[id] || {};
         sequences.push({
             id,
