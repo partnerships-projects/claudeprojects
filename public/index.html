@@ -256,8 +256,8 @@ function setAutoRefresh() {
 }
 
 // ── Load page ────────────────────────────────────────────────────────────────
-// Reads Redis. If ALL data is there → render instantly, no waiting.
-// If not (first visit / reset) → show spinner, populate fully, then render.
+// ALWAYS renders Redis data instantly — even if 93/95. Never blocks.
+// Then kicks off a single silent background refresh to fill any gaps.
 
 async function loadPage() {
     var params = new URLSearchParams(window.location.search);
@@ -275,19 +275,16 @@ async function loadPage() {
         if (!res.ok) return;
         if (data.threshold) THRESHOLD = data.threshold;
 
-        var meta = data._meta || {};
-        var isComplete = data.sequences && data.sequences.length > 0 && meta.partial === false;
-
-        if (isComplete) {
-            // ALL data is in Redis — render instantly
+        if (data.sequences && data.sequences.length > 0) {
+            // Redis has data — render instantly, no waiting
             renderResults(data.sequences);
             updateTimestamp(data.lastUpdated, data.lastRefresh);
-            // Silent background check (doesn't affect what's shown)
+            // Silent background refresh — no spinners, no status bars
             silentRefresh();
         } else {
-            // Redis is empty or incomplete — populate it fully first
+            // Redis is completely empty (first visit / after reset)
             document.getElementById('loader').classList.add('active');
-            setStatus('info', 'Loading all sequences from SalesHandy...');
+            setStatus('info', 'First load — fetching sequences from SalesHandy...');
             await populateCache();
         }
     } catch (e) {
@@ -295,8 +292,8 @@ async function loadPage() {
     }
 }
 
-// ── Populate cache: loops until ALL sequences have ALL counts ────────────────
-// Only renders ONCE when 100% complete. No partial rendering.
+// ── First-visit populate: only runs when Redis is completely empty ───────────
+// Loops refresh until we have data, then renders.
 
 async function populateCache() {
     var btn = document.getElementById('btn-refresh');
@@ -304,7 +301,7 @@ async function populateCache() {
     var loader = document.getElementById('loader');
 
     try {
-        for (var attempt = 0; attempt < 40; attempt++) {
+        for (var attempt = 0; attempt < 20; attempt++) {
             var data;
             try {
                 var res = await fetch('/api/sequences?refresh=1');
@@ -317,124 +314,86 @@ async function populateCache() {
             var meta = (data && data._meta) || {};
             var fetched = meta.fetched || 0;
             var total = meta.total || '?';
-            setStatus('info', 'Loading all sequences... (' + fetched + '/' + total + ')');
+            setStatus('info', 'First load... (' + fetched + '/' + total + ')');
 
-            // ALL done — render everything at once
-            if (data && meta.partial === false && data.sequences && data.sequences.length > 0) {
+            // Got data — render it and stop blocking
+            if (data && data.sequences && data.sequences.length > 0) {
                 loader.classList.remove('active');
                 if (data.threshold) THRESHOLD = data.threshold;
                 renderResults(data.sequences);
                 updateTimestamp(data.lastUpdated, data.lastRefresh);
                 clearStatus();
+                // If still partial, let silentRefresh fill gaps in the background
+                if (meta.partial) silentRefresh();
                 return;
             }
 
-            // Locked = another refresh is running, just wait
             if (meta.source === 'refresh-locked') {
                 await new Promise(function(r) { setTimeout(r, 3000); });
                 continue;
             }
 
-            // Partial or rate-limited — wait then retry
             var waitMs = meta.rateLimited ? (meta.retryAfterMs || 30000) : 2000;
             await new Promise(function(r) { setTimeout(r, waitMs); });
         }
 
-        // Exhausted retries — show whatever we have
         loader.classList.remove('active');
-        try {
-            var finalRes = await fetch('/api/sequences');
-            var finalData = await finalRes.json();
-            if (finalData && finalData.sequences && finalData.sequences.length > 0) {
-                if (finalData.threshold) THRESHOLD = finalData.threshold;
-                renderResults(finalData.sequences);
-                updateTimestamp(finalData.lastUpdated, finalData.lastRefresh);
-            }
-        } catch (_) {}
         clearStatus();
     } finally {
         btn.disabled = false;
     }
 }
 
-// ── Silent background revalidation ──────────────────────────────────────────
-// Loops until all counts are fresh, then re-renders ONCE. No UI disruption.
+// ── Silent background refresh ───────────────────────────────────────────────
+// Single fire-and-forget call. When it returns, silently re-renders.
+// No spinners, no status bars, no blocking.
 
-async function silentRefresh() {
-    try {
-        for (var attempt = 0; attempt < 20; attempt++) {
-            var res = await fetch('/api/sequences?refresh=1');
-            var data;
-            try { data = await res.json(); } catch (_) { return; }
-
-            var meta = (data && data._meta) || {};
-
-            // Complete — silently update the table
-            if (data && meta.partial === false && data.sequences && data.sequences.length > 0) {
+function silentRefresh() {
+    fetch('/api/sequences?refresh=1')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data && data.sequences && data.sequences.length > 0) {
                 if (data.threshold) THRESHOLD = data.threshold;
                 renderResults(data.sequences);
                 updateTimestamp(data.lastUpdated, data.lastRefresh);
-                return;
             }
-
-            // Not complete yet — wait and retry silently
-            var waitMs = meta.rateLimited ? (meta.retryAfterMs || 30000) : 3000;
-            await new Promise(function(r) { setTimeout(r, waitMs); });
-        }
-    } catch (_) {}
+        })
+        .catch(function() {});
 }
 
-// ── Manual refresh button ───────────────────────────────────────────────────
-// Loops until ALL counts refreshed, then renders. Shows progress.
+// ── Refresh button ──────────────────────────────────────────────────────────
+// Current data stays on screen. Fires ONE background refresh.
+// When it returns (~50s), silently updates the table. No blocking.
 
-async function triggerRefresh() {
+function triggerRefresh() {
     if (isRefreshing) return;
     isRefreshing = true;
 
     var btn = document.getElementById('btn-refresh');
     btn.disabled = true;
-    setStatus('info', 'Refreshing...');
+    setStatus('info', 'Refreshing in background...');
 
-    try {
-        for (var attempt = 0; attempt < 40; attempt++) {
-            var data;
-            try {
-                var res = await fetch('/api/sequences?refresh=1');
-                data = await res.json();
-            } catch (_) {
-                await new Promise(function(r) { setTimeout(r, 5000); });
-                continue;
-            }
-
-            var meta = (data && data._meta) || {};
-            var fetched = meta.fetched || 0;
-            var total = meta.total || '?';
-            setStatus('info', 'Refreshing... (' + fetched + '/' + total + ')');
-
-            if (data && meta.partial === false && data.sequences && data.sequences.length > 0) {
+    fetch('/api/sequences?refresh=1')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data && data.sequences && data.sequences.length > 0) {
                 if (data.threshold) THRESHOLD = data.threshold;
                 renderResults(data.sequences);
                 updateTimestamp(data.lastUpdated, data.lastRefresh);
-                setStatus('success', 'All ' + data.sequences.length + ' sequences updated.');
-                setTimeout(clearStatus, 3000);
-                return;
             }
-
-            if (meta.source === 'refresh-locked') {
-                await new Promise(function(r) { setTimeout(r, 3000); });
-                continue;
-            }
-
-            var waitMs = meta.rateLimited ? (meta.retryAfterMs || 30000) : 2000;
-            await new Promise(function(r) { setTimeout(r, waitMs); });
-        }
-        clearStatus();
-    } catch (err) {
-        clearStatus();
-    } finally {
-        isRefreshing = false;
-        btn.disabled = false;
-    }
+            var meta = (data && data._meta) || {};
+            var count = data && data.sequences ? data.sequences.length : 0;
+            setStatus('success', 'Updated — ' + count + ' sequences.');
+            setTimeout(clearStatus, 3000);
+        })
+        .catch(function() {
+            setStatus('error', 'Refresh failed.');
+            setTimeout(clearStatus, 3000);
+        })
+        .finally(function() {
+            isRefreshing = false;
+            btn.disabled = false;
+        });
 }
 
 function renderResults(sequences) {
