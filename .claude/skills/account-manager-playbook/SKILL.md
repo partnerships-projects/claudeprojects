@@ -16,76 +16,37 @@ When this skill is invoked, follow these steps:
 
 ## Step 2: Run the Playbook Analysis
 
-Analyze the transcript/summary against the Account Manager Playbook below. Produce a structured analysis with the sections listed under "Analysis Output Format".
+Analyze the transcript/summary against the Account Manager Playbook below. Your analysis must be SHORT and DIRECT — written like a coach giving feedback, not a report card.
 
 ## Step 3: Post to Slack
 
-After generating the analysis, post it to the `#playbook-channel` Slack channel (channel ID: `C0ANCMX689Z`) using the `slack_send_message` MCP tool.
-
-Format the Slack message using Slack markdown:
-- Use `*bold*` not `**bold**`
-- Use `_italic_` not `*italic*`
-- Use emojis for section headers
-- End the message with `_Sent using Account Manager Playbook Skill_`
+After generating the analysis, post it to the `#playbook-channel` Slack channel (channel ID: `C0ANCMX689Z`) using the `slack_send_message` MCP tool. Use Slack markdown (`*bold*`, `_italic_`).
 
 ---
 
-## Analysis Output Format
+## Output Format
 
-### 1. Client Situation Assessment
-Based on the playbook's Weekly Client Check framework, assess:
-- **Relationship Pulse**: 🔴 Cold/distant, 🟠 Neutral/transactional, or 🟢 Engaged/warm — with evidence from the transcript
-- **Tone & Behavior Signals**: Note any shifts in client tone, engagement level, reply patterns
-- **Red Flags Detected**: From the playbook's red flag checklist (slower replies, short responses, missed meetings, less curiosity, vague feedback, colder tone, internal pressure mentions)
-- **Green Flags Detected**: From the playbook's green flag checklist (fast replies, detailed feedback, asking questions, sharing internal updates, positive tone, interest in scaling, engaging with ideas)
+The output MUST follow this exact structure. No tables, no checklists, no emoji section headers. Just plain, direct coaching feedback. The ENTIRE message must be under 3000 characters.
 
-### 2. Call Summary
-Provide a concise summary of the meeting covering:
-- Key topics discussed
-- Decisions made or deferred
-- Client requests or concerns raised
-- Internal issues or context the client shared
-- Any commitments made by either side
+Example of the tone and format to follow:
 
-### 3. Performance Assessment
-Using Rule 5 (interpret performance, not just pass it on):
-- **Current performance status**: Clearly hitting targets / Close to targets / Missing targets
-- **Root cause analysis**: What is the real issue behind performance (targeting, messaging mismatch, weak offer, poor lead quality, etc.)
-- **What the numbers are actually saying** about the campaign — opens, replies, conversions, and what each indicates
+"*Overall Score: 6.5/10* — Kristijan shows strong relationship skills and honesty, but gaps in strategic leadership when it mattered most.
+*What he did well:* He genuinely cares about the client, doesn't hide behind the contract, speaks from ownership, and Benjamin explicitly says he loves working with him and thinks communication is great. The trust is real.
+*Where he fell short:* This was a retention-critical call and three things needed to happen that didn't. First, when Benjamin said the outreach is "too cold," Kristijan accepted it rather than diagnosing the root cause — is it the copy, the targeting, the CTA, or is it genuinely a product-market fit issue? Second, he offered options (switch plans, forward to Sophie, try food creators) instead of leading with one clear recommendation backed by data. Third, the pause was agreed to with no milestones or relaunch criteria — just "let's touch base in a month."
+*Top 3 coaching priorities:*
+1. Diagnose before you prescribe — when a client says something isn't working, dig into why before jumping to plan changes
+2. Lead with conviction — one strong recommendation beats three options when the client is losing confidence
+3. Never let a pause happen without clear next steps, timelines, and success criteria for restart"
 
-### 4. Playbook Rule Compliance Feedback
-Evaluate the account manager's behavior in the meeting against ALL 12 rules. For each relevant rule, score and comment:
-
-| Rule | Status | Notes |
-|------|--------|-------|
-| Rule 1: Act like part of the client's team | ✅/⚠️/❌ | Evidence |
-| Rule 2: Build trust early | ✅/⚠️/❌ | Evidence |
-| Rule 3: Communicate to reduce uncertainty | ✅/⚠️/❌ | Evidence |
-| Rule 4: First month = testing, not false certainty | ✅/⚠️/❌ | Evidence |
-| Rule 5: Interpret performance, don't just report | ✅/⚠️/❌ | Evidence |
-| Rule 6: Active response to underperformance | ✅/⚠️/❌ | Evidence |
-| Rule 7: Show the thinking, not just outcomes | ✅/⚠️/❌ | Evidence |
-| Rule 8: Lead the client strategically | ✅/⚠️/❌ | Evidence |
-| Rule 9: Retention signals awareness | ✅/⚠️/❌ | Evidence |
-| Rule 10: Value beyond campaign scope | ✅/⚠️/❌ | Evidence |
-| Rule 11: Honest, direct communication | ✅/⚠️/❌ | Evidence |
-| Rule 12: Manage momentum, not just the account | ✅/⚠️/❌ | Evidence |
-
-### 5. Suggested Next Steps
-Based on the playbook's action framework:
-- **Key issue to fix**: The single most important problem to address
-- **Key opportunity to push forward**: The single biggest opportunity
-- **Recommended client questions for next interaction**: Pick 1-2 from the playbook's Weekly Client Questions based on the current situation
-- **Specific actions**: Concrete steps for the coming week
-- **Risk Level Classification**: 🔴 High Risk / 🟠 Medium Risk / 🟢 Low Risk — with justification
-
-### 6. Monthly Check Items (if applicable)
-If this is a monthly review or end-of-month meeting, also assess:
-- Business alignment: Has the client's goal changed?
-- Satisfaction level
-- Value perception
-- Expansion/retention opportunities
-- Monthly reflection recommendations
+RULES:
+- Follow the exact 4-part structure: Overall Score, What they did well, Where they fell short, Top 3 coaching priorities
+- Name the account manager(s) by name
+- Be specific — cite what was said or done, reference specific moments
+- Write like a direct manager giving honest feedback, not an AI generating a report
+- No bullet-point lists except the 3 coaching priorities
+- No tables, no emoji headers, no checklists
+- Keep it under 3000 characters total
+- End with: _Sent using Account Manager Playbook Skill_
 
 ---
 
