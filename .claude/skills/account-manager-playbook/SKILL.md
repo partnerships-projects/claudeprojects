@@ -45,27 +45,38 @@ After generating the analysis, post it to the `#playbook-channel` Slack channel 
 
 ## Output Format
 
-The output MUST follow this exact structure. No tables, no checklists, no emoji section headers. Just plain, direct coaching feedback. The ENTIRE message must be under 3000 characters.
+The output MUST be clean, well-spaced, and easy to scan in Slack. Use Slack markdown (`*bold*`, `_italic_`, `•` for bullets). Structure it for readability — generous spacing between sections, bullet points for "did well" and "fell short", numbered list for coaching priorities.
 
-Example of the tone and format to follow:
+### Structure (follow this exactly):
 
-"*Overall Score: 6.5/10* — Kristijan shows strong relationship skills and honesty, but gaps in strategic leadership when it mattered most.
-*What he did well:* He genuinely cares about the client, doesn't hide behind the contract, speaks from ownership, and Benjamin explicitly says he loves working with him and thinks communication is great. The trust is real.
-*Where he fell short:* This was a retention-critical call and three things needed to happen that didn't. First, when Benjamin said the outreach is "too cold," Kristijan accepted it rather than diagnosing the root cause — is it the copy, the targeting, the CTA, or is it genuinely a product-market fit issue? Second, he offered options (switch plans, forward to Sophie, try food creators) instead of leading with one clear recommendation backed by data. Third, the pause was agreed to with no milestones or relaunch criteria — just "let's touch base in a month."
-*Top 3 coaching priorities:*
-1. Diagnose before you prescribe — when a client says something isn't working, dig into why before jumping to plan changes
-2. Lead with conviction — one strong recommendation beats three options when the client is losing confidence
-3. Never let a pause happen without clear next steps, timelines, and success criteria for restart"
+1. **Headline** — `*Meeting between [AM name] and [Client name]*` in bold, followed by meeting title and date on the next line.
 
-RULES:
-- Follow the exact 4-part structure: Overall Score, What they did well, Where they fell short, Top 3 coaching priorities
-- Name the account manager(s) by name
-- Be specific — cite what was said or done, reference specific moments
+2. **Summary** — 2-3 sentence context paragraph. What's the situation, what was discussed, what was the outcome.
+
+3. **Overall Score** — `*Overall Score: X/10*` with a blank line above and below for spacing.
+
+4. **What he did well** — `*What he did well:*` as a bold header, followed by a blank line, then bullet points (`•`) — each point is a specific observation with evidence from the transcript. Keep each bullet to 1-2 sentences.
+
+5. **Where he fell short** — `*Where he fell short:*` as a bold header, followed by a blank line, then bullet points (`•`) — each point names a specific failure with what should have happened instead. Keep each bullet to 2-3 sentences max.
+
+6. **Top 3 coaching priorities** — `*Top 3 coaching priorities:*` as a bold header, followed by a blank line, then numbered list (`1. 2. 3.`). Each priority is bolded with an explanation. Format: `1. *Priority name* — explanation`.
+
+7. **Sign-off** — `_Sent using Account Manager Playbook Skill_`
+
+### Spacing rules:
+- Two blank lines (`\n\n\n`) between major sections (summary → score, score → did well, did well → fell short, fell short → priorities)
+- One blank line between the section header and bullet points
+- One blank line between each bullet point for breathing room
+
+### Tone rules:
 - Write like a direct manager giving honest feedback, not an AI generating a report
-- No bullet-point lists except the 3 coaching priorities
-- No tables, no emoji headers, no checklists
-- Keep it under 3000 characters total
-- End with: _Sent using Account Manager Playbook Skill_
+- Name the account manager(s) by name
+- Be specific — cite what was said or done, reference specific moments from the transcript
+- Each bullet should feel like a standalone coaching observation
+
+### Hard limits:
+- Keep the entire message under 4000 characters
+- End with: `_Sent using Account Manager Playbook Skill_`
 
 ---
 
