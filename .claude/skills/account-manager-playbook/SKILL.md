@@ -1,3 +1,9 @@
+---
+name: account-manager-playbook
+description: Analyzes meeting transcripts and client interactions against the Account Manager Playbook. Reads from Slack #clients-notes and posts results to #playbook-channel.
+user-invocable: true
+---
+
 # Account Manager Playbook Skill
 
 When this skill is invoked, follow these steps:
@@ -10,7 +16,7 @@ When this skill is invoked, follow these steps:
 
 ## Step 2: Run the Playbook Analysis
 
-Analyze the transcript/summary against the Account Manager Playbook below. Produce a structured analysis with these sections:
+Analyze the transcript/summary against the Account Manager Playbook below. Produce a structured analysis with the sections listed under "Analysis Output Format".
 
 ## Step 3: Post to Slack
 
@@ -25,8 +31,6 @@ Format the Slack message using Slack markdown:
 ---
 
 ## Analysis Output Format
-
-## Output Format
 
 ### 1. Client Situation Assessment
 Based on the playbook's Weekly Client Check framework, assess:
