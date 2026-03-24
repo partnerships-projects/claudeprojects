@@ -49,33 +49,33 @@ The output MUST be clean, well-spaced, and easy to scan in Slack. Use Slack mark
 
 ### Structure (follow this exactly):
 
-1. **Headline** — `*Meeting between [AM name] and [Client name]*` in bold, followed by meeting title and date on the next line.
+1. `*Meeting between [AM name] and [Client name]*` — bold headline, meeting title and date on next line.
 
-2. **Summary** — 2-3 sentence context paragraph. What's the situation, what was discussed, what was the outcome.
+2. One sentence summary of the situation and outcome.
 
-3. **Overall Score** — `*Overall Score: X/10*` with a blank line above and below for spacing.
+3. `*Overall Score: X/10*`
 
-4. **What he did well** — `*What he did well:*` as a bold header, followed by a blank line, then bullet points (`•`) — each point is a specific observation with evidence from the transcript. Keep each bullet to 1-2 sentences.
+4. `*What he did well:*` — 2-3 bullet points max (`•`). One sentence each. Only the strongest observations.
 
-5. **Where he fell short** — `*Where he fell short:*` as a bold header, followed by a blank line, then bullet points (`•`) — each point names a specific failure with what should have happened instead. Keep each bullet to 2-3 sentences max.
+5. `*Where he fell short:*` — 2-3 bullet points max (`•`). One sentence each. Name the gap, don't over-explain.
 
-6. **Top 3 coaching priorities** — `*Top 3 coaching priorities:*` as a bold header, followed by a blank line, then numbered list (`1. 2. 3.`). Each priority is bolded with an explanation. Format: `1. *Priority name* — explanation`.
+6. `*Top 3 coaching priorities:*` — numbered list. Format: `1. *Short name* — one sentence`. No paragraphs.
 
-7. **Sign-off** — `_Sent using Account Manager Playbook Skill_`
+7. `_Sent using Account Manager Playbook Skill_`
 
 ### Spacing rules:
-- Two blank lines (`\n\n\n`) between major sections (summary → score, score → did well, did well → fell short, fell short → priorities)
-- One blank line between the section header and bullet points
-- One blank line between each bullet point for breathing room
+- One blank line between each section
+- One blank line between bullet points
 
 ### Tone rules:
-- Write like a direct manager giving honest feedback, not an AI generating a report
-- Name the account manager(s) by name
-- Be specific — cite what was said or done, reference specific moments from the transcript
-- Each bullet should feel like a standalone coaching observation
+- Direct and punchy — every sentence earns its place
+- Name the AM by name
+- Cite specific moments but keep it to a few words, not quotes
+- Write like a coach in the hallway, not a formal review
 
 ### Hard limits:
-- Keep the entire message under 4000 characters
+- ENTIRE message must be under 1500 characters
+- If it feels long, cut it
 - End with: `_Sent using Account Manager Playbook Skill_`
 
 ---
