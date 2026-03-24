@@ -1,6 +1,30 @@
 # Account Manager Playbook Skill
 
-When this skill is invoked, analyze the provided meeting transcript (or client situation) against the Account Manager Playbook below. Produce a structured analysis with these sections:
+When this skill is invoked, follow these steps:
+
+## Step 1: Get the Meeting Transcript
+
+- If the user provides a transcript directly, use that.
+- If no transcript is provided, read the latest messages from the `#clients-notes` Slack channel (channel ID: `C0AG42ULCN4`) using the `slack_read_channel` MCP tool. Pick the most recent meeting summary.
+- If the user specifies a particular meeting or client name, find the matching message in `#clients-notes`.
+
+## Step 2: Run the Playbook Analysis
+
+Analyze the transcript/summary against the Account Manager Playbook below. Produce a structured analysis with these sections:
+
+## Step 3: Post to Slack
+
+After generating the analysis, post it to the `#playbook-channel` Slack channel (channel ID: `C0ANCMX689Z`) using the `slack_send_message` MCP tool.
+
+Format the Slack message using Slack markdown:
+- Use `*bold*` not `**bold**`
+- Use `_italic_` not `*italic*`
+- Use emojis for section headers
+- End the message with `_Sent using Account Manager Playbook Skill_`
+
+---
+
+## Analysis Output Format
 
 ## Output Format
 
