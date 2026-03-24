@@ -80,7 +80,7 @@
       "parameters": {
         "channel": {
           "__rl": true,
-          "value": "C0AFNFYBAJG",
+          "value": "C0ANCMX689Z",
           "mode": "id"
         },
         "text": "={{ '📋 *Playbook Analysis: ' + $json.meeting_title + '*\\n---\\n' + $json.analysis + '\\n\\n_Sent using Account Manager Playbook Skill_' }}",

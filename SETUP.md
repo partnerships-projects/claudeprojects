@@ -29,7 +29,7 @@ This is a **standalone workflow** — it does not interfere with your existing M
 
 **Slack:**
 1. In the "Post to Slack" node, connect your existing Slack credential
-2. The default channel is `#client-feedback` (C0AFNFYBAJG) — change this if you want a dedicated channel
+2. The default channel is `#playbook-channel` (C0ANCMX689Z) — change this if you want a dedicated channel
 
 ### Step 3: Connect MeetGeek
 
@@ -50,7 +50,7 @@ The webhook expects a JSON payload with these fields (MeetGeek sends these autom
 
 1. In n8n, click **Test Workflow**
 2. Send a test webhook with sample data, or wait for your next MeetGeek recording
-3. Check `#client-feedback` in Slack for the playbook analysis
+3. Check `#playbook-channel` in Slack for the playbook analysis
 
 ---
 
