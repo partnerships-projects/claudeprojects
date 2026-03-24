@@ -78,6 +78,9 @@ The output MUST be clean, well-spaced, and easy to scan in Slack. Use Slack mark
 - If it feels long, cut it
 - End with: `_Sent using Account Manager Playbook Skill_`
 
+### Critical rule:
+- NEVER compare meetings to each other. Every meeting is a different person, a different creator, a different situation. Treat each meeting as completely independent. No references to previous analyses or other clients.
+
 ---
 
 ## The Playbook
