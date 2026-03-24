@@ -4,3 +4,5 @@ backups/
 ops.log
 *.tmp
 .mcp.json
+.claude/pending-meeting.json
+.claude/last-analyzed-meeting.txt

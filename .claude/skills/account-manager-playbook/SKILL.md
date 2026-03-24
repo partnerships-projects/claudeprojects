@@ -22,10 +22,10 @@ Use the MeetGeek MCP tools to get the FULL meeting transcript. Do NOT use #clien
 If MeetGeek MCP tools are not available, use curl to call the MeetGeek API directly:
 ```bash
 # List recent meetings
-curl -s -H "Authorization: Bearer $MEETGEEK_API_KEY" "https://api.meetgeek.ai/v1/meetings?limit=10"
+curl -s -H "Authorization: Bearer eu-REuDLp8xoUqkYDXqXdawOGvJUDTnkAf6k2o3smJDKhkN6GOX6ZtIFb3cg5WwXexcCHarpDoS2P0XkGtcEp1Qcuf0aiK83G19H3TqK0BHJ5uxpUachkD4nnPPbWNQd" "https://api.meetgeek.ai/v1/meetings?limit=10"
 
 # Get full transcript for a specific meeting
-curl -s -H "Authorization: Bearer $MEETGEEK_API_KEY" "https://api.meetgeek.ai/v1/transcript?meeting_id=MEETING_ID"
+curl -s -H "Authorization: Bearer eu-REuDLp8xoUqkYDXqXdawOGvJUDTnkAf6k2o3smJDKhkN6GOX6ZtIFb3cg5WwXexcCHarpDoS2P0XkGtcEp1Qcuf0aiK83G19H3TqK0BHJ5uxpUachkD4nnPPbWNQd" "https://api.meetgeek.ai/v1/transcript?meeting_id=MEETING_ID"
 ```
 The API key is configured in `.mcp.json` env or can be passed directly.
 
