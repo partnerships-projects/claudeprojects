@@ -15,9 +15,11 @@ Analyzes meeting transcripts and client interactions against the Account Manager
 
 **Usage:** Invoke with `/account-manager-playbook` and provide a meeting transcript or client interaction context.
 
-**MeetGeek Integration:** The playbook is connected to MeetGeek via n8n workflow. When a new meeting is recorded, the transcript can be automatically pulled and analyzed against the playbook.
+**MeetGeek Integration:** A standalone n8n workflow (`n8n-playbook-workflow.json`) connects MeetGeek to the playbook analysis. When a new meeting is recorded, MeetGeek sends the transcript via webhook → Claude analyzes it against the playbook → results post to Slack. This is independent from existing MeetGeek workflows. See `SETUP.md` for configuration.
 
 ## Project Structure
 - `index.html` — Campaign performance dashboard
 - `ops.sh` — Operations automation script
 - `.claude/skills/` — Skill definitions for Claude Code
+- `n8n-playbook-workflow.json` — Standalone n8n workflow (import into n8n)
+- `SETUP.md` — Setup guide for the MeetGeek → Playbook → Slack pipeline
