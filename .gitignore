@@ -3,3 +3,4 @@ dist/
 backups/
 ops.log
 *.tmp
+.mcp.json

@@ -67,14 +67,50 @@ Each analysis posts to Slack with:
 
 ---
 
-## Claude Code Skill
+## Claude Code Skill (with MeetGeek MCP Server)
 
-The playbook is also available as a Claude Code skill. Anyone on the team can use it by:
+The playbook skill pulls full transcripts directly from MeetGeek — no need to copy/paste or rely on #clients-notes summaries.
 
-1. Providing a meeting transcript in a Claude Code conversation
-2. Asking for a playbook analysis
+### Quick Setup
 
-The skill definition is in `.claude/skills/account-manager-playbook.md`.
+1. Clone the MeetGeek MCP server:
+   ```bash
+   git clone https://github.com/meetgeekai/meetgeek-mcp-server.git
+   cd meetgeek-mcp-server && npm install && npm run build
+   ```
+
+2. Create `.mcp.json` in the project root (this file is gitignored):
+   ```json
+   {
+     "mcpServers": {
+       "meetgeek": {
+         "command": "node",
+         "args": ["/absolute/path/to/meetgeek-mcp-server/dist/index.js"],
+         "env": {
+           "MEETGEEK_API_KEY": "your_meetgeek_api_key",
+           "MEETGEEK_BASE_URL": "https://api.meetgeek.ai"
+         }
+       }
+     }
+   }
+   ```
+
+3. Get your API key from MeetGeek: **Settings → Integrations → Public API**
+
+4. Restart Claude Code — the MeetGeek tools will be available automatically.
+
+### Available MeetGeek Tools
+- `meetgeek:meetings` — List all recent meetings
+- `meetgeek:transcript` — Get full transcript with speaker labels and timestamps
+- `meetgeek:highlights` — AI-generated key moments
+- `meetgeek:summary` — Meeting summaries and action items
+- `meetgeek:meetingDetails` — Meeting metadata
+- `meetgeek:teamMeetings` — Meetings filtered by team
+
+### Usage
+Invoke with `/account-manager-playbook` — the skill will automatically pull the latest meeting from MeetGeek, analyze it against the playbook, and post results to `#playbook-channel`.
+
+The skill definition is in `.claude/skills/account-manager-playbook/SKILL.md`.
 
 ---
 

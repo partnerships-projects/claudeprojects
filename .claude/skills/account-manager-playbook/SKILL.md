@@ -1,6 +1,6 @@
 ---
 name: account-manager-playbook
-description: Analyzes meeting transcripts and client interactions against the Account Manager Playbook. Reads from Slack #clients-notes and posts results to #playbook-channel.
+description: Analyzes meeting transcripts and client interactions against the Account Manager Playbook. Pulls full transcripts from MeetGeek and posts results to #playbook-channel.
 user-invocable: true
 ---
 
@@ -8,11 +8,30 @@ user-invocable: true
 
 When this skill is invoked, follow these steps:
 
-## Step 1: Get the Meeting Transcript
+## Step 1: Get the Meeting Transcript from MeetGeek
 
+Use the MeetGeek MCP tools to get the FULL meeting transcript. Do NOT use #clients-notes — those are condensed summaries that lack the detail needed for proper analysis.
+
+### Primary method: MeetGeek MCP tools (preferred)
+1. Use `meetgeek:meetings` to list recent meetings.
+2. If the user specifies a client or meeting, find the matching one. Otherwise use the most recent.
+3. Use `meetgeek:transcript` with the meeting ID to get the full transcript with speaker labels and timestamps.
+4. Optionally use `meetgeek:highlights` and `meetgeek:summary` for additional context.
+
+### Fallback method: MeetGeek API via Bash
+If MeetGeek MCP tools are not available, use curl to call the MeetGeek API directly:
+```bash
+# List recent meetings
+curl -s -H "Authorization: Bearer $MEETGEEK_API_KEY" "https://api.meetgeek.ai/v1/meetings?limit=10"
+
+# Get full transcript for a specific meeting
+curl -s -H "Authorization: Bearer $MEETGEEK_API_KEY" "https://api.meetgeek.ai/v1/transcript?meeting_id=MEETING_ID"
+```
+The API key is configured in `.mcp.json` env or can be passed directly.
+
+### Last resort: Direct transcript input
 - If the user provides a transcript directly, use that.
-- If no transcript is provided, read the latest messages from the `#clients-notes` Slack channel (channel ID: `C0AG42ULCN4`) using the `slack_read_channel` MCP tool. Pick the most recent meeting summary.
-- If the user specifies a particular meeting or client name, find the matching message in `#clients-notes`.
+- NEVER fall back to #clients-notes for playbook analysis — those summaries are too condensed.
 
 ## Step 2: Run the Playbook Analysis
 
