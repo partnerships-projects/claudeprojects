@@ -1,0 +1,137 @@
+{
+  "name": "MeetGeek → Account Manager Playbook Analysis → Slack",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "meetgeek-playbook",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "6bc10400-3c47-4a24-8777-945ec8fd98ac",
+      "name": "MeetGeek Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "webhookId": "meetgeek-playbook"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "PASTE_YOUR_ANTHROPIC_API_KEY_HERE"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 2000, system: `You analyze meeting transcripts and produce a short coaching report for account managers. Follow this EXACT format — no deviations.\n\nFORMAT:\n1. Bold headline: *Meeting between [AM name] and [Client name]* followed by meeting title and date on next line.\n2. One sentence summary of the situation and outcome.\n3. *Overall Score: X/10*\n4. *What they did well:* — 2-3 bullet points max using the bullet character. One sentence each. Only the strongest observations.\n5. *Where they fell short:* — 2-3 bullet points max using the bullet character. One sentence each. Name the gap, do not over-explain.\n6. *Top 3 coaching priorities:* — numbered list. Format: 1. *Short name* — one sentence. No paragraphs.\n7. End with: _Sent using Account Manager Playbook Skill_\n\nSPACING RULES:\n- One blank line between each section\n- One blank line between bullet points\n\nTONE RULES:\n- Direct and punchy — every sentence earns its place\n- Name the account manager by name\n- Cite specific moments but keep it to a few words, not quotes\n- Write like a coach in the hallway, not a formal review\n\nHARD LIMITS:\n- ENTIRE message must be under 1500 characters\n- If it feels long, cut it\n- NEVER compare to other meetings or clients — each meeting is completely independent\n\nPLAYBOOK RULES TO ASSESS AGAINST:\nR1: Act like part of client team — ownership language, shared goals\nR2: Build trust early — listen, guide competently, adjust to client style\nR3: Reduce uncertainty — every message clarifies what is happening, what it means, what is next\nR4: First month = testing — frame honestly, underpromise and overdeliver\nR5: Interpret performance — translate numbers into meaning\nR6: Active response to underperformance — intensity not panic, make effort visible\nR7: Show the thinking — make reasoning visible to client\nR8: Lead strategically — push back with logic when needed\nR9: Watch retention signals — delayed replies, short messages, missed meetings\nR10: Value beyond scope — useful ideas beyond narrow deliverables\nR11: Be honest — direct without being rough\nR12: Manage momentum — always a next step, never let the account sleep`, messages: [{ role: 'user', content: `Analyze this meeting transcript against the playbook:\\n\\nMeeting: ${$json.meeting_title || $json.title || 'Unknown'}\\nDate: ${$json.meeting_date || $json.date || 'Unknown'}\\nDuration: ${$json.meeting_duration || $json.duration || 'Unknown'}\\nParticipants: ${$json.participants || 'Unknown'}\\n\\nTRANSCRIPT:\\n${$json.transcript || $json.text || $json.content || 'No transcript provided'}` }] }) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "64ce65ab-a2c2-4149-aaa7-f9fcc2a3d025",
+      "name": "Claude Playbook Analysis",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [240, 0]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "analysis-text",
+              "name": "analysis",
+              "value": "={{ $json.content[0].text }}",
+              "type": "string"
+            },
+            {
+              "id": "meeting-title",
+              "name": "meeting_title",
+              "value": "={{ $('MeetGeek Webhook').item.json.meeting_title || $('MeetGeek Webhook').item.json.title || 'Meeting' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "37bf9c08-ff95-4602-8f84-8aab1e07e7b0",
+      "name": "Extract Analysis",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [480, 0]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "C0ANCMX689Z",
+          "mode": "list",
+          "cachedResultName": "playbook-channel"
+        },
+        "text": "={{ $json.analysis }}",
+        "otherOptions": {}
+      },
+      "id": "fb1ad6ae-9f73-4d49-8c8d-7d89dc427913",
+      "name": "Post to Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [720, 0],
+      "webhookId": "a68a7da2-e189-4628-93b6-40644af42ab7"
+    }
+  ],
+  "connections": {
+    "MeetGeek Webhook": {
+      "main": [
+        [
+          {
+            "node": "Claude Playbook Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude Playbook Analysis": {
+      "main": [
+        [
+          {
+            "node": "Extract Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Analysis": {
+      "main": [
+        [
+          {
+            "node": "Post to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

@@ -1,0 +1,145 @@
+{
+  "name": "MeetGeek → Account Manager Playbook Analysis → Slack",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "meetgeek-playbook",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "MeetGeek Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "meetgeek-playbook"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "PASTE_YOUR_API_KEY_HERE"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 4000, system: `You are an Account Manager Performance Analyst. You analyze meeting transcripts against the Account Manager Playbook to provide structured feedback, coaching, and next steps.\n\nYour playbook has 12 rules:\nR1: Act like part of the client's team — ownership language, shared goals, not vendor distance\nR2: Build trust early — listen, guide competently, make communication easy; adjust to client style\nR3: Reduce uncertainty in comms — every message should clarify what's happening, what it means, what's next\nR4: First month = testing — frame it honestly, don't pretend certainty; underpromise and overdeliver\nR5: Interpret performance — translate numbers into meaning, not just dashboards\nR6: Active response to underperformance — intensity not panic; make effort visible to client\nR7: Show the thinking — make reasoning visible so client sees process, not just changing numbers\nR8: Lead strategically — don't just follow client instructions; push back with logic when needed\nR9: Watch retention signals — delayed replies, short messages, missed meetings = early warning signs\nR10: Value beyond scope — broader business awareness, useful ideas beyond narrow deliverables\nR11: Be honest — direct without being rough; don't hide behind polished language\nR12: Manage momentum — always a next step, next idea, next improvement; never let the account sleep\n\nWeekly checks: Relationship Pulse (🔴🟠🟢), Performance Reality, Effort Visibility, Control Check, Red/Green Flags\nMonthly checks: Business Alignment, Satisfaction, Value Perception, Expansion/Retention, Risk Level (🔴🟠🟢)\n\nRed Flags: slower replies, short responses, missed meetings, less curiosity, vague feedback, colder tone, internal pressure mentions\nGreen Flags: fast replies, detailed feedback, asking questions, sharing updates, positive tone, interest in scaling, engaging with ideas\n\nFormat your response using Slack markdown (use *bold* not **bold**, use _italic_ not *italic*). Use emojis for section headers. Keep it actionable and direct — this is coaching, not a report card. If something is weak, say it clearly. Always cite evidence from the transcript.\n\nStructure:\n1. 🎯 Client Situation Assessment (relationship pulse with evidence, red/green flags)\n2. 📝 Call Summary (key topics, decisions, concerns, commitments)\n3. 📊 Performance Assessment (status, root cause, what numbers mean)\n4. 📏 Playbook Rule Compliance (table: rule | ✅⚠️❌ | evidence for each relevant rule)\n5. ➡️ Suggested Next Steps (key issue, key opportunity, recommended questions, specific actions with deadlines)\n6. 🚦 Risk Level (🔴🟠🟢 with justification)`, messages: [{ role: 'user', content: `Analyze this meeting transcript against the Account Manager Playbook:\\n\\nMeeting: ${($json.body || $json).meeting_title || ($json.body || $json).title || 'Unknown'}\\nDate: ${($json.body || $json).meeting_date || ($json.body || $json).date || 'Unknown'}\\nDuration: ${($json.body || $json).meeting_duration || ($json.body || $json).duration || 'Unknown'}\\nParticipants: ${($json.body || $json).participants || 'Unknown'}\\n\\nTRANSCRIPT:\\n${($json.body || $json).transcript || ($json.body || $json).text || ($json.body || $json).content || 'No transcript provided'}` }] }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "claude-analysis",
+      "name": "Claude Playbook Analysis",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 300]
+    },
+    {
+      "parameters": {
+        "operation": "set",
+        "assignments": {
+          "assignments": [
+            {
+              "id": "analysis-text",
+              "name": "analysis",
+              "value": "={{ $json.content[0].text }}",
+              "type": "string"
+            },
+            {
+              "id": "meeting-title",
+              "name": "meeting_title",
+              "value": "={{ ($('MeetGeek Webhook').item.json.body || $('MeetGeek Webhook').item.json).meeting_title || ($('MeetGeek Webhook').item.json.body || $('MeetGeek Webhook').item.json).title || 'Meeting' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "extract-response",
+      "name": "Extract Analysis",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [720, 300]
+    },
+    {
+      "parameters": {
+        "channel": {
+          "__rl": true,
+          "value": "C0ANCMX689Z",
+          "mode": "id"
+        },
+        "text": "={{ '📋 *Playbook Analysis: ' + ($json.body || $json).meeting_title + '*\\n---\\n' + $json.analysis + '\\n\\n_Sent using Account Manager Playbook Skill_' }}",
+        "otherOptions": {}
+      },
+      "id": "slack-post",
+      "name": "Post to Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [960, 300]
+    }
+  ],
+  "connections": {
+    "MeetGeek Webhook": {
+      "main": [
+        [
+          {
+            "node": "Claude Playbook Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude Playbook Analysis": {
+      "main": [
+        [
+          {
+            "node": "Extract Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Analysis": {
+      "main": [
+        [
+          {
+            "node": "Post to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    {
+      "name": "account-management"
+    },
+    {
+      "name": "playbook"
+    },
+    {
+      "name": "meetgeek"
+    }
+  ]
+}
