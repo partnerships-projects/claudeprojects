@@ -59,6 +59,14 @@ account, named after it, and select with `--account`:
 tradeoff is real and worth stating: environment variables are readable by
 anything running in the session, which proxy-held secrets are not.
 
+Two things that will bite during the switch. Environment changes apply to
+**new sessions**, so the session open while you edit them keeps the old
+behaviour until it is restarted. And **use each account's master key**: a
+sub-account key authenticates perfectly and reads an empty namespace, so it
+looks connected and reports nothing. Reading never requires resetting a
+secret — resetting the key SalesHandy sends through breaks SMTP auth and
+stops every mailbox on that account.
+
 Whenever explicit credentials are supplied, the puller first authenticates
 with a known-bad credential. If that succeeds, the header is being overridden,
 and it exits without showing results rather than attributing one account's

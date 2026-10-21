@@ -139,6 +139,15 @@ def get(resource, **params):
             return json.load(r)
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", "replace")[:300]
+        if e.code in (401, 403) and not credentials(ACCOUNT):
+            raise SystemExit(
+                f"HTTP {e.code} on /{resource}: no credentials were sent and "
+                "nothing supplied them.\n"
+                "Pass --account NAME with MJ_<NAME>_APIKEY/_SECRET set, or set "
+                "MJ_APIKEY/MJ_SECRET,\n"
+                "or restore an api.mailjet.com entry in the environment's "
+                "Network secrets."
+            )
         raise SystemExit(f"HTTP {e.code} on /{resource}\n  {body}")
 
 
