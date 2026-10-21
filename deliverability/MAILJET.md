@@ -59,7 +59,13 @@ account, named after it, and select with `--account`:
 tradeoff is real and worth stating: environment variables are readable by
 anything running in the session, which proxy-held secrets are not.
 
-Two things that will bite during the switch. Environment changes apply to
+Two things that will bite during the switch. **`api.mailjet.com` has to stay
+on the environment's allowed-domains list.** Reaching the host and
+authenticating to it are separately controlled, and removing the network
+secret can take the allowlist entry with it, which blocks the connection
+before any credential is read. The symptom is a proxy `403` on `CONNECT`
+("connect_rejected"), not a Mailjet `401` — the request never arrives. Keep
+the domain allowed and remove only the secret. Environment changes apply to
 **new sessions**, so the session open while you edit them keeps the old
 behaviour until it is restarted. And **use each account's master key**: a
 sub-account key authenticates perfectly and reads an empty namespace, so it
