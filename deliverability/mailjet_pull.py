@@ -6,17 +6,26 @@ is a separate Mailjet account with its own API key, and each key is its own
 data namespace: a key sees nothing of another account's senders, messages or
 statistics. So this runs once per account, with that account's key.
 
-Auth, in order of preference:
+Auth. Every account's API lives at the same hostname, api.mailjet.com, so a
+host-scoped proxy secret can only ever stand for one account. Pick a mode:
 
-  1. Nothing in the environment. Credentials are injected by an outbound
-     proxy (Claude Code "Network secrets" scoped to api.mailjet.com), so the
-     key never enters this process. This is the default and the safest mode.
-  2. MJ_APIKEY / MJ_SECRET in the environment, sent as HTTP Basic auth
-     (api key = username, secret = password). For running this outside the
-     proxy. Never pass credentials on the command line.
+  1. --account NAME reads MJ_<NAME>_APIKEY / MJ_<NAME>_SECRET from the
+     environment and sends HTTP Basic auth (api key = username, secret =
+     password). This is the mode that scales to the whole fleet: one
+     variable pair per account, named after it.
+  2. MJ_APIKEY / MJ_SECRET, same thing without a name. For a single account.
+  3. Nothing in the environment, and no --account. The request goes out bare
+     and an outbound proxy is expected to attach credentials (Claude Code
+     "Network secrets" scoped to api.mailjet.com). The key never enters this
+     process, which makes it the safest mode -- but it fits one account only.
+
+Never pass credentials on the command line; they would be visible to anyone
+who can list processes, and they land in shell history.
 
 Usage:
+    python3 mailjet_pull.py whoami            # which account answered
     python3 mailjet_pull.py senders
+    python3 mailjet_pull.py senders --account laura
     python3 mailjet_pull.py domains
     python3 mailjet_pull.py fleet-daily   --days 21
     python3 mailjet_pull.py mailbox-daily --days 21
@@ -44,6 +53,59 @@ BASE = "https://api.mailjet.com/v3/REST"
 # There is no diagnostic here that needs it.
 FORBIDDEN = {"apikey", "apikeyaccess", "apikeytotals"}
 
+# Set once from --account. Module-level because get() is called from every
+# command and threading an account through each one buys nothing.
+ACCOUNT = None
+
+
+def auth_is_honored():
+    """Does this environment let us choose which account we authenticate as?
+
+    An outbound proxy holding a secret for api.mailjet.com overrides the
+    Authorization header on every request to that host. Requests then answer
+    from the proxy's account no matter whose credentials were sent -- with
+    HTTP 200 and a full, plausible body. Nothing in the response says it came
+    from the wrong account, so an unchecked multi-account pull silently files
+    one account's figures under another's name.
+
+    Deliberately bad credentials settle it: a request Mailjet actually judged
+    would be a 401.
+    """
+    req = urllib.request.Request(f"{BASE}/myprofile")
+    token = base64.b64encode(b"credential-override-probe:invalid").decode()
+    req.add_header("Authorization", f"Basic {token}")
+    try:
+        urllib.request.urlopen(req, timeout=60)
+        return False            # invalid credentials "worked" -> overridden
+    except urllib.error.HTTPError as e:
+        return e.code in (401, 403)
+    except urllib.error.URLError as e:
+        raise SystemExit(f"cannot reach {BASE}: {e}")
+
+
+def credentials(account):
+    """(key, secret) for an account, or None to let the proxy supply them.
+
+    Raises if an account was named but only half its pair is set -- sending
+    the request bare would silently answer from whatever account the proxy
+    holds, which looks like success against the wrong data.
+    """
+    prefix = f"MJ_{account.upper().replace('-', '_')}_" if account else "MJ_"
+    key = os.environ.get(prefix + "APIKEY")
+    secret = os.environ.get(prefix + "SECRET")
+    if key and secret:
+        return key, secret
+    if key or secret:
+        missing = prefix + ("SECRET" if key else "APIKEY")
+        raise SystemExit(f"{missing} is not set, so only half of this "
+                         "account's credentials are available")
+    if account:
+        raise SystemExit(
+            f"--account {account} needs {prefix}APIKEY and {prefix}SECRET "
+            "in the environment; neither is set"
+        )
+    return None
+
 
 def get(resource, **params):
     """GET one Mailjet resource. Returns the decoded body.
@@ -67,9 +129,9 @@ def get(resource, **params):
         url += ("&" if "?" in url else "?") + urllib.parse.urlencode(qs)
 
     req = urllib.request.Request(url)
-    key, secret = os.environ.get("MJ_APIKEY"), os.environ.get("MJ_SECRET")
-    if key and secret:
-        token = base64.b64encode(f"{key}:{secret}".encode()).decode()
+    auth = credentials(ACCOUNT)
+    if auth:
+        token = base64.b64encode(":".join(auth).encode()).decode()
         req.add_header("Authorization", f"Basic {token}")
 
     try:
@@ -249,6 +311,32 @@ def failures(args):
     return detail
 
 
+def whoami(args):
+    """Which account answered.
+
+    Worth running first in any multi-account session. Account names are a
+    local convention; APIKeyID is Mailjet's own and is what actually
+    distinguishes one account's data from another's.
+    """
+    stats = get("statcounters", CounterSource="APIKey", CounterTiming="Message",
+                CounterResolution="Lifetime").get("Data", [{}])[0]
+    senders = get("sender", Limit=200).get("Data", [])
+    domains = sorted({s["Email"].split("@")[1] for s in senders if "@" in s["Email"]})
+    me = {
+        "requested_account": ACCOUNT or "(proxy-supplied credentials)",
+        "api_key_id": stats.get("APIKeyID"),
+        "senders": len(senders),
+        "domains": len(domains),
+        "lifetime_sent": stats.get("MessageSentCount"),
+        "sample_domains": domains[:5],
+    }
+    if args.json:
+        return me
+    for k, v in me.items():
+        print(f"{k:20} {v}")
+    return me
+
+
 def webhooks(args):
     """Mailjet event callbacks.
 
@@ -276,6 +364,7 @@ COMMANDS = {
     "mailbox-daily": mailbox_daily,
     "failures": failures,
     "webhooks": webhooks,
+    "whoami": whoami,
 }
 
 
@@ -283,6 +372,10 @@ def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("command", choices=sorted(COMMANDS))
+    p.add_argument("--account", metavar="NAME",
+                   help="read credentials from MJ_<NAME>_APIKEY/_SECRET, e.g. "
+                        "--account laura. Omit to use MJ_APIKEY/MJ_SECRET, or "
+                        "a proxy-injected secret if those are unset too.")
     p.add_argument("--days", type=int, default=21, help="lookback window (default 21)")
     p.add_argument("--columns", type=int, default=7,
                    help="days shown in the mailbox-daily table (default 7)")
@@ -290,6 +383,23 @@ def main():
                    help="messages to page through for failures (default 2000)")
     p.add_argument("--json", action="store_true", help="emit raw rows")
     args = p.parse_args()
+
+    global ACCOUNT
+    ACCOUNT = args.account
+    creds = credentials(ACCOUNT)  # fail now, not midway through a 50-call pull
+
+    if creds and not auth_is_honored():
+        raise SystemExit(
+            "refusing to run: this environment overrides the Authorization\n"
+            "header for api.mailjet.com, so the credentials passed here are\n"
+            "ignored and every request answers from whichever account the\n"
+            "proxy holds a secret for.\n\n"
+            "Invalid credentials were accepted, which is how that was found.\n"
+            "Results would carry the wrong account's name, so none are shown.\n\n"
+            "Fix: remove the api.mailjet.com entry from the environment's\n"
+            "Network secrets, then rerun. Every account is reachable through\n"
+            "MJ_<NAME>_APIKEY/_SECRET once nothing is intercepting the header."
+        )
 
     out = COMMANDS[args.command](args)
     if args.json:

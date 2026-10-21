@@ -26,18 +26,54 @@ breaks the moment it changes, and every mailbox on that account stops sending.
 
 ## Credentials
 
-Preferred: put the key and secret in the environment's **Network secrets**
-scoped to `api.mailjet.com`, so the outbound proxy attaches them and the
-credentials never enter the process or the transcript. The puller sends no
-`Authorization` header in this mode and works unchanged.
+Every Mailjet account's API lives at the same hostname, `api.mailjet.com`.
+That one fact decides the whole setup, because credentials here are scoped by
+host.
 
-Outside the proxy, set `MJ_APIKEY` and `MJ_SECRET` in the environment. Never
-pass credentials as command-line arguments.
+**A proxy secret for `api.mailjet.com` captures every Mailjet request in the
+environment.** It does not merely supply credentials when none were given: it
+overwrites the `Authorization` header that was sent. A request carrying
+Laura's key, or carrying deliberate garbage, comes back `HTTP 200` with the
+proxy account's senders, statistics and messages — a complete, plausible body
+with nothing in it indicating the wrong account answered. Verified: a request
+authenticated as `xxx:yyy` returned the Addison account's 54 senders.
+
+So the two modes do not mix, and only one of them reaches more than one
+account:
+
+**One account — proxy secret.** Put the key and secret in the environment's
+**Network secrets** scoped to `api.mailjet.com`. The credentials never enter
+the process or the transcript, which makes this the safest mode. Run the
+puller with no `--account`. This is the right choice if only one account ever
+needs reading.
+
+**The fleet — environment variables.** Remove the `api.mailjet.com` entry from
+Network secrets first, or it will capture everything. Then set one pair per
+account, named after it, and select with `--account`:
+
+    MJ_ADDISON_APIKEY / MJ_ADDISON_SECRET   ->  --account addison
+    MJ_LAURA_APIKEY   / MJ_LAURA_SECRET     ->  --account laura
+    MJ_MEGAN_APIKEY   / MJ_MEGAN_SECRET     ->  --account megan
+
+(`--account ss-mj` reads `MJ_SS_MJ_*`; hyphens become underscores.) The
+tradeoff is real and worth stating: environment variables are readable by
+anything running in the session, which proxy-held secrets are not.
+
+Whenever explicit credentials are supplied, the puller first authenticates
+with a known-bad credential. If that succeeds, the header is being overridden,
+and it exits without showing results rather than attributing one account's
+figures to another. `whoami` reports the `APIKeyID` that actually answered —
+Mailjet's own identifier, and the only reliable way to tell accounts apart,
+since `--account` names are just a local convention.
+
+Never pass credentials as command-line arguments: they are visible to anyone
+who can list processes, and they persist in shell history.
 
 ## Commands
 
 | Command | What it answers |
 | --- | --- |
+| `whoami` | Which account actually answered: `APIKeyID`, sender and domain counts, lifetime volume. Run it first in any multi-account session. |
 | `senders` | Which addresses and domains this key can send as, and whether they are active. Use it to confirm a key is the right one. |
 | `domains` | Mailjet's last SPF/DKIM validation per domain. |
 | `fleet-daily` | Account-wide sent / blocked / bounced / spam / unsub per day. |
@@ -45,7 +81,8 @@ pass credentials as command-line arguments.
 | `failures` | Non-delivered messages with the receiving server's own SMTP response text. |
 | `webhooks` | Event callback URLs and whether Mailjet still delivers to them. |
 
-`--days N` sets the lookback, `--json` emits raw rows for piping.
+`--days N` sets the lookback, `--account NAME` selects an account, `--json`
+emits raw rows for piping.
 
 ## What Mailjet is and is not good for
 
@@ -65,7 +102,12 @@ Two things Mailjet cannot tell you, both easy to misread:
 
 - **Open rates.** Mailjet open and click tracking is off for this traffic
   (`IsOpenTracked: false`), so its per-day opened counts read 0 regardless of
-  reality. SalesHandy's own tracking pixel is the only open signal.
+  reality. This is deliberate, not a misconfiguration: SalesHandy tracks opens
+  and clicks itself, and it is the only open signal. Do not switch Mailjet
+  tracking on to "fix" the zeros. Mailjet implements it by injecting its own
+  pixel and rewriting links through a Mailjet redirect domain, which would put
+  a redirector into cold email that is deliberately kept free of links, and
+  would double-count against SalesHandy.
 - **Spam complaints, for Gmail.** Mailjet's lifetime `MessageSpamCount` on the
   Addison account is 48 against 1.69M sent, about 0.003%, while Postmaster
   reports 1–3% for the same domains. Mailjet only counts complaints that reach
