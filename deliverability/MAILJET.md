@@ -43,21 +43,33 @@ account:
 
 **One account — proxy secret.** Put the key and secret in the environment's
 **Network secrets** scoped to `api.mailjet.com`. The credentials never enter
-the process or the transcript, which makes this the safest mode. Run the
-puller with no `--account`. This is the right choice if only one account ever
-needs reading.
+the process or the transcript, which makes this the safest mode, and it is the
+right way to read Mailjet from a Claude Code session. Run the puller with no
+`--account`. Only one account is reachable at a time; swapping which key sits
+there swaps which account answers, so ad-hoc work across several accounts
+means doing them one at a time.
 
-**The fleet — environment variables.** Remove the `api.mailjet.com` entry from
-Network secrets first, or it will capture everything. Then set one pair per
-account, named after it, and select with `--account`:
+**The fleet — a CI secret store.** One pair per account, named after it, and
+select with `--account`:
 
     MJ_ADDISON_APIKEY / MJ_ADDISON_SECRET   ->  --account addison
     MJ_LAURA_APIKEY   / MJ_LAURA_SECRET     ->  --account laura
     MJ_MEGAN_APIKEY   / MJ_MEGAN_SECRET     ->  --account megan
 
-(`--account ss-mj` reads `MJ_SS_MJ_*`; hyphens become underscores.) The
-tradeoff is real and worth stating: environment variables are readable by
-anything running in the session, which proxy-held secrets are not.
+(`--account ss-mj` reads `MJ_SS_MJ_*`; hyphens become underscores.)
+
+Where those variables come from matters. **Not a Claude Code environment's
+"Environment variables" field** — that field states plainly that its contents
+are visible to anyone using the environment and that credentials do not belong
+in it. Put them in a secret store built for the job, which for this project
+means GitHub Actions secrets on the Collect repo, alongside `NOTION_TOKEN`
+and `POSTMASTER_SA_JSON`. Actions secrets are masked in logs, are not readable
+back from the UI, and have no one-per-host limit, which is the whole
+difficulty here.
+
+That points at where this work belongs anyway: per-mailbox volume is a daily
+metric for the Collect stage to record into Notion, not something to pull by
+hand from a chat session.
 
 Two things that will bite during the switch. **`api.mailjet.com` has to stay
 on the environment's allowed-domains list.** Reaching the host and
