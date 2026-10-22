@@ -3,3 +3,5 @@ dist/
 backups/
 ops.log
 *.tmp
+__pycache__/
+*.pyc
