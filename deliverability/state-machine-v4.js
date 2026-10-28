@@ -133,7 +133,19 @@ const CONFIG = {
   quarantineMinVolume: 500,
 
   // ── Corroboration ──
-  minReadings:         4,   // published days with a reading, else INSUFFICIENT_DATA
+  //
+  // Tiered by severity: the worse a domain looks, the less corroboration is
+  // required before saying so. Four days is right for a domain hovering near
+  // the line, where one noisy day would otherwise promote it; it is too slow
+  // for a domain already at 1.5%+, where waiting two more days to confirm what
+  // the data plainly says costs two more days of damage.
+  //
+  // This is affordable only because of the confidence bound above. The bound
+  // already refuses to call a thin reading healthy, so the reading-count floor
+  // no longer has to carry that job on its own and can be set by urgency.
+  minReadings:         4,   // near the line — wait for corroboration
+  minReadingsElevated: 3,   // at or above the WATCH band
+  minReadingsSevere:   2,   // at or above the THROTTLE band — say it now
   minNonZeroReadings:  2,   // one bad day is never enough to go past WATCH
 
   // ── Escalator ──
@@ -429,6 +441,42 @@ function configIssues(d, ev) {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// Hard bounces. Not part of the spam ladder and not calibrated on this
+// fleet: these are the external figures receivers publish, and they are
+// reported alongside rather than folded into the complaint rate because they
+// are a different fault with a different fix. A domain can have a perfect
+// complaint rate and still be burning its reputation on invalid addresses,
+// which no Postmaster metric would show.
+//
+// This reads Mailjet, not Postmaster: every send, every receiver, with no
+// dependence on Google publishing anything. So it is deliberately computed
+// before the spam rate is even consulted. A domain whose Gmail reading is
+// unpublished, too thin or too new is unmeasurable on COMPLAINTS only -- its
+// bounce rate is measured just the same, and dropping that signal because
+// Google was quiet would throw away the one fault we can still see.
+// `tools-forcreators.com` is exactly this shape: 1.70% hard bounce, 3.94%
+// blocked, 0.00% Gmail spam.
+//
+// Never reaches RETIRE. RETIRE proposes replacing the domain, and a bounce
+// problem is a list problem: fixable by whoever sourced the addresses,
+// without burning the domain.
+function bounceVerdict(ev, cfg) {
+  if (ev.hardBouncePct === null || ev.mjSent < cfg.hardBounceMinSent) return null;
+  const tail = `(${ev.hardBounced} of ${ev.mjSent})`;
+  if (ev.hardBouncePct >= cfg.hardBounceSevere) {
+    return { level: 'QUARANTINE',
+             reason: `HARD BOUNCE ${ev.hardBouncePct.toFixed(2)}% ${tail} — at or above ` +
+                     `the ${cfg.hardBounceSevere}% level receivers treat as abuse. ` +
+                     'Stop and fix the list; the copy is not the problem.' };
+  }
+  if (ev.hardBouncePct >= cfg.hardBounceWarn) {
+    return { level: 'THROTTLE',
+             reason: `hard bounce ${ev.hardBouncePct.toFixed(2)}% ${tail} — above the ` +
+                     `${cfg.hardBounceWarn}% level that calls list quality into question` };
+  }
+  return null;
+}
+
 // Raw verdict
 // ───────────────────────────────────────────────────────────────────────────
 
@@ -437,20 +485,38 @@ function rawState(d, ev, cfg) {
 
   if (!d.inPlay) return { state: 'IDLE', reasons: [ADVICE.IDLE] };
 
+  // Measured independently of Postmaster, so it stands even when the spam rate
+  // does not. Where the complaint rate is unmeasurable, this is the verdict;
+  // where it is measurable, it raises it below.
+  const HB = bounceVerdict(ev, cfg);
+  const onBouncesAlone = (why) => ({
+    state: HB.level,
+    reasons: [HB.reason, `${why} — this verdict rests on bounces alone.`],
+  });
+
   // The mean is the spine and it is not ours to invent. A domain without one
   // has no published readings, which for ~107 of 213 domains is a permanent and
   // entirely normal condition rather than something pending.
   const P = ev.pooled;
   if (P.rate === null) {
-    return { state: 'INSUFFICIENT_DATA',
-             reasons: ['no published reading with a measured denominator'] };
+    const why = 'no published reading with a measured denominator';
+    if (HB) return onBouncesAlone(why);
+    return { state: 'INSUFFICIENT_DATA', reasons: [why] };
   }
-  if (ev.readingCount < cfg.minReadings) {
-    return { state: 'INSUFFICIENT_DATA',
-             reasons: [`only ${ev.readingCount} published readings (need ${cfg.minReadings})`] };
-  }
-
   const m = P.rate;
+
+  // How much corroboration this reading needs depends on what it says. The
+  // rate has to be computed first to know which tier applies, which is why
+  // this gate sits below rather than above it.
+  const need = m >= cfg.spamMeanThrottle ? cfg.minReadingsSevere
+             : m >= cfg.spamMeanWatch    ? cfg.minReadingsElevated
+             :                             cfg.minReadings;
+  if (ev.readingCount < need) {
+    const why = `only ${ev.readingCount} published readings ` +
+                `(need ${need} at ${m.toFixed(2)}%)`;
+    if (HB) return onBouncesAlone(why);
+    return { state: 'INSUFFICIENT_DATA', reasons: [why] };
+  }
   let state = m < cfg.spamMeanHealthy  ? 'HEALTHY'
             : m < cfg.spamMeanWatch    ? 'WATCH'
             : m < cfg.spamMeanThrottle ? 'THROTTLE'
@@ -464,6 +530,9 @@ function rawState(d, ev, cfg) {
   // severity -- it is the absence of a verdict, which is why LOW_VOLUME is off
   // the ladder and returns here rather than falling through to hysteresis.
   if (state === 'HEALTHY' && P.upperBound > cfg.spamMeanHealthy) {
+    const thin = `pooled ${m.toFixed(3)}% over only ${P.sent.toLocaleString()} sent — ` +
+                 `the most this rules out is ${P.upperBound.toFixed(2)}%`;
+    if (HB) return { ...onBouncesAlone(thin), pooled: P };
     return {
       state: 'LOW_VOLUME',
       reasons: [`pooled ${m.toFixed(3)}% over only ${P.sent.toLocaleString()} sent — ` +
@@ -509,23 +578,11 @@ function rawState(d, ev, cfg) {
                  'too little volume for the rate to be trustworthy');
   }
 
-  // Hard bounces. Not part of the spam ladder and not calibrated on this
-  // fleet: these are the external figures receivers publish, and they are
-  // reported alongside rather than folded into the complaint rate because
-  // they are a different fault with a different fix. A domain can have a
-  // perfect complaint rate and still be burning its reputation on invalid
-  // addresses, which no Postmaster metric would show.
-  if (ev.hardBouncePct !== null && ev.mjSent >= cfg.hardBounceMinSent) {
-    if (ev.hardBouncePct >= cfg.hardBounceSevere) {
-      if (isWorse('THROTTLE', state)) state = 'THROTTLE';
-      reasons.push(`HARD BOUNCE ${ev.hardBouncePct.toFixed(2)}% ` +
-                   `(${ev.hardBounced} of ${ev.mjSent}) — at or above the ${cfg.hardBounceSevere}% ` +
-                   'level receivers treat as abuse; the list, not the copy, is the problem');
-    } else if (ev.hardBouncePct >= cfg.hardBounceWarn) {
-      reasons.push(`hard bounce ${ev.hardBouncePct.toFixed(2)}% ` +
-                   `(${ev.hardBounced} of ${ev.mjSent}) — above the ${cfg.hardBounceWarn}% ` +
-                   'level that calls list quality into question');
-    }
+  // The bounce verdict, computed at the top, raises the complaint state but
+  // never lowers it: the two are separate faults and the worse one governs.
+  if (HB) {
+    if (isWorse(HB.level, state)) state = HB.level;
+    reasons.push(HB.reason);
   }
 
   if (ev.spiking) {

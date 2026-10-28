@@ -119,21 +119,128 @@ near('trypersonaspace bound clears the line', by['trypersonaspace.com'].upperBou
 near('usepersonaspace pooled > daily mean', by['usepersonaspace.com'].pooledSpam, 0.722, 0.05);
 check('…and it is not HEALTHY', by['usepersonaspace.com'].state === 'HEALTHY', false);
 
-console.log('\nhard bounce is reported, not conflated');
+console.log('\nhard bounce has its own two-step ladder, capped below RETIRE');
 const HB = '2026-10-12~0~2000~60~100|2026-10-13~0~2000~60~100|2026-10-14~0~2000~60~100|' +
            '2026-10-15~0~2000~60~100|2026-10-16~0~2000~60~100';
 const hb = decide({ domains: [D('bouncy.com', HB), D('getpersonaspace.com', GETPERSONA)] })
   .proposals.find(p => p.domain === 'bouncy.com');
 near('hard bounce pct computed', hb.hardBouncePct, 3.0, 0.01);
-check('warn level leaves the state alone', hb.state, 'HEALTHY');
-check('…but it is stated in the reasons',
-      hb.reasons.some(x => /hard bounce 3\.00%/.test(x)), true);
+check('2%+ hard bounce reaches THROTTLE', hb.state, 'THROTTLE');
+check('…and says why', hb.reasons.some(x => /hard bounce 3\.00%/.test(x)), true);
+check('…on bounces, not on spam (Gmail spam is clean here)', hb.pooledSpam, 0);
 
 const SEV = '2026-10-12~0~2000~120~100|2026-10-13~0~2000~120~100|2026-10-14~0~2000~120~100|' +
             '2026-10-15~0~2000~120~100|2026-10-16~0~2000~120~100';
 const sev = decide({ domains: [D('severe.com', SEV), D('getpersonaspace.com', GETPERSONA)] })
   .proposals.find(p => p.domain === 'severe.com');
-check('6% hard bounce reaches THROTTLE', sev.state, 'THROTTLE');
+check('5%+ hard bounce reaches QUARANTINE', sev.state, 'QUARANTINE');
+check('…and names the list, not the copy',
+      sev.reasons.some(x => /Stop and fix the list/.test(x)), true);
+
+// RETIRE proposes replacing the domain. A bounce problem is a list problem, so
+// no bounce rate, however bad, may reach it on its own.
+const EXTREME = '2026-10-12~0~2000~1800~100|2026-10-13~0~2000~1800~100|2026-10-14~0~2000~1800~100|' +
+                '2026-10-15~0~2000~1800~100|2026-10-16~0~2000~1800~100';
+const ext = decide({ domains: [D('extreme.com', EXTREME), D('getpersonaspace.com', GETPERSONA)] })
+  .proposals.find(p => p.domain === 'extreme.com');
+near('90% hard bounce is computed', ext.hardBouncePct, 90.0, 0.01);
+check('…and still stops at QUARANTINE, never RETIRE', ext.state, 'QUARANTINE');
+
+// Below the floor the bounce rate is a ratio of too few sends to trust.
+const THIN = '2026-10-12~0~40~8~100|2026-10-13~0~40~8~100|2026-10-14~0~40~8~100|' +
+             '2026-10-15~0~40~8~100|2026-10-16~0~40~8~100';
+const thin = decide({ domains: [D('thin.com', THIN), D('getpersonaspace.com', GETPERSONA)] })
+  .proposals.find(p => p.domain === 'thin.com');
+check('a 20% bounce rate on 200 sends does not move the state', thin.state === 'QUARANTINE', false);
+near('…because the rate itself is still computed', thin.hardBouncePct, 20.0, 0.01);
+
+console.log('\nthe bounce verdict does not depend on Google publishing anything');
+
+// Bounce rate comes from Mailjet: every send, every receiver. Each of these
+// three domains is unmeasurable on COMPLAINTS for a different reason, and
+// measured just the same on bounces. Before the verdict was lifted above the
+// spam rate, all three returned INSUFFICIENT_DATA/LOW_VOLUME and the one fault
+// still visible was discarded.
+const bouncesOnly = (series, label) => {
+  const p = decide({ domains: [D(label, series), D('getpersonaspace.com', GETPERSONA)] })
+    .proposals.find(x => x.domain === label);
+  check(`${label}: reaches QUARANTINE on bounces alone`, p.state, 'QUARANTINE');
+  check(`${label}: and says the verdict rests on bounces`,
+        p.reasons.some(x => /rests on bounces alone/.test(x)), true);
+  return p;
+};
+
+// 1. Gmail never published a rate (the ~107-of-213 normal case).
+bouncesOnly('2026-10-12~~2000~120~100|2026-10-13~~2000~120~100|' +
+            '2026-10-14~~2000~120~100|2026-10-15~~2000~120~100', 'unpublished.com');
+
+// 2. Published, but too thin to rule anything out — would have been LOW_VOLUME.
+// Dates picked to avoid 10-14, which GETPERSONA records as 0.00 and which is
+// therefore not a published day fleet-wide. Four readings clears the floor, so
+// this fixture reaches the LOW_VOLUME branch rather than stopping short of it;
+// 800 sent puts the bound at 0.375%, over the 0.3% line.
+const thinSpam = bouncesOnly(
+  '2026-10-12~0~200~12~100|2026-10-13~0~200~12~100|' +
+  '2026-10-15~0~200~12~100|2026-10-16~0~200~12~100', 'thinspam.com');
+near('thinspam bound really is over the line', thinSpam.upperBound, 0.375, 0.01);
+check('…and it is NOT reported as LOW_VOLUME', thinSpam.state === 'LOW_VOLUME', false);
+check('…while still carrying the pooled spam figure it does have',
+      thinSpam.pooledSpam, 0);
+
+// 3. Only two mild readings, short of that tier's floor of four.
+bouncesOnly('2026-10-15~0.1~2000~120~100|2026-10-16~0.1~2000~120~100', 'tooyoung.com');
+
+// A clean domain on the same unmeasurable footing stays unmeasurable: the
+// verdict only speaks when the bounce rate actually crosses a line.
+const quiet = decide({ domains: [
+  D('quiet.com', '2026-10-12~~2000~2~100|2026-10-13~~2000~2~100'),
+  D('getpersonaspace.com', GETPERSONA),
+] }).proposals.find(p => p.domain === 'quiet.com');
+check('a clean bounce rate does not manufacture a verdict', quiet.state, 'INSUFFICIENT_DATA');
+
+// The two faults are independent and the WORSE one governs. A domain already at
+// QUARANTINE on complaints must not be talked down to THROTTLE by a bounce
+// reading that is merely bad.
+const bothBad = decide({ domains: [D('bothbad.com',
+  '2026-10-12~2.5~2000~60~100|2026-10-13~2.5~2000~60~100|' +
+  '2026-10-14~2.5~2000~60~100|2026-10-15~2.5~2000~60~100')] })
+  .proposals.find(p => p.domain === 'bothbad.com');
+near('a 3% bounce rate is only a THROTTLE on its own', bothBad.hardBouncePct, 3.0, 0.01);
+check('…so a 2.5% complaint rate still governs', bothBad.state, 'QUARANTINE');
+check('…and both faults are named', bothBad.reasons.length >= 2, true);
+
+console.log('\nthe reading floor tightens as the reading worsens');
+
+// Same two days, three severities. Two readings is enough to act on a severe
+// one, and not enough to act on a mild one.
+const twoDays = (rate) =>
+  `2026-10-15~${rate}~2000~0~100|2026-10-16~${rate}~2000~0~100`;
+const tier = (rate) => decide({
+  domains: [D('tier.com', twoDays(rate)), D('getpersonaspace.com', GETPERSONA)],
+}).proposals.find(p => p.domain === 'tier.com');
+
+check('2 days at 2.0% is scored, not deferred', tier(2.0).state, 'QUARANTINE');
+check('2 days at 1.0% still waits for a 3rd', tier(1.0).state, 'INSUFFICIENT_DATA');
+check('…and says how many it wants',
+      /need 3 at 1\.00%/.test(tier(1.0).reasons[0]), true);
+check('2 days at 0.2% waits for all 4', tier(0.2).state, 'INSUFFICIENT_DATA');
+check('…and wants the full four', /need 4 at 0\.20%/.test(tier(0.2).reasons[0]), true);
+
+// The tier is set by severity alone, so a third day lets the middle band score
+// without waiting for the fourth.
+const mid = decide({ domains: [
+  D('mid.com', '2026-10-14~1~2000~0~100|2026-10-15~1~2000~0~100|2026-10-16~1~2000~0~100'),
+  D('getpersonaspace.com', GETPERSONA),
+] }).proposals.find(p => p.domain === 'mid.com');
+check('3 days at 1.0% is scored', mid.state === 'INSUFFICIENT_DATA', false);
+
+// A fast-onset problem has to reach a person on the day it is provable, not
+// after the old four-day wait.
+const urgent = decide({ domains: [
+  D('onset.com', twoDays(2.0)), D('getpersonaspace.com', GETPERSONA),
+] });
+check('a 2-day severe domain lands on the urgent list',
+      urgent.urgent.some(u => u.domain === 'onset.com'), true);
 
 console.log('\ncontext metrics ride along without scoring');
 check('hardBouncePct present', typeof by['getpersonaspace.com'].hardBouncePct, 'number');
