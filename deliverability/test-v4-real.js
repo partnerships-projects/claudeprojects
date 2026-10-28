@@ -209,6 +209,77 @@ near('a 3% bounce rate is only a THROTTLE on its own', bothBad.hardBouncePct, 3.
 check('…so a 2.5% complaint rate still governs', bothBad.state, 'QUARANTINE');
 check('…and both faults are named', bothBad.reasons.length >= 2, true);
 
+console.log('\nMailjet is read on Mailjet\'s days, not on Google\'s');
+
+// Postmaster runs ~4 days behind. This domain has nine published days at a
+// quiet 0.2% bounce rate, then four days Google has NOT published yet in which
+// the bounce rate has gone to 1.2%. Those four days are the whole point: they
+// are the freshest and most specific data held about this domain, and before
+// the Mailjet counters were decoupled from Google's published set they were
+// filtered out of every figure below.
+const LAGGING =
+  '2026-10-15~0.1~1000~2~100|2026-10-16~0.1~1000~2~100|2026-10-17~0.1~1000~2~100|' +
+  '2026-10-18~0.1~1000~2~100|2026-10-19~0.1~1000~2~100|2026-10-20~0.1~1000~2~100|' +
+  '2026-10-21~0.1~1000~2~100|2026-10-22~0.1~1000~2~100|2026-10-23~0.1~1000~2~100|' +
+  '2026-10-24~~1000~12~|2026-10-25~~1000~12~|2026-10-26~~1000~12~|2026-10-27~~1000~12~';
+const lag = decide({ domains: [D('lagging.com', LAGGING), D('getpersonaspace.com', GETPERSONA)] })
+  .proposals.find(p => p.domain === 'lagging.com');
+
+check('Postmaster is read only through its last published day', lag.pmThrough, '2026-10-23');
+check('…while Mailjet is read through today', lag.mjThrough, '2026-10-27');
+check('…4 days of data Google has not caught up to', lag.readings, 9);
+near('the bounce rate counts all 13 Mailjet days', lag.hardBouncePct, 0.508, 0.01);
+check('…which is 13,000 sent, not the 9,000 Google published', lag.mjSent, 13000);
+
+console.log('\na bounce rate on the way up is a verdict of its own');
+check('the onset is detected', lag.bounceOnset !== null, true);
+near('…recent 3 Mailjet days', lag.bounceOnset.recentPct, 1.2, 0.01);
+near('…against the baseline before them', lag.bounceOnset.baselinePct, 0.3, 0.01);
+check('…and it reaches WATCH', lag.state, 'WATCH');
+check('…while still well under the 2% line', lag.hardBouncePct < CONFIG.hardBounceWarn, true);
+check('…and says it is moving, not that it has arrived',
+      lag.reasons.some(x => /hard bounce RISING/.test(x)), true);
+
+// Same-day data about a list going bad outranks a four-day-old complaint rate,
+// so this belongs on the list a person reads today.
+const lagRun = decide({ domains: [D('lagging.com', LAGGING), D('getpersonaspace.com', GETPERSONA)] });
+const lagU = lagRun.urgent.find(u => u.domain === 'lagging.com');
+check('it lands on the urgent list', !!lagU, true);
+check('…on its own merit, not as a note on the spam rate', lagU.why, 'hard bounce rising');
+
+// The guards: movement has to be real, on enough mail, against something.
+const onsetOf = (series) => decide({
+  domains: [D('o.com', series), D('getpersonaspace.com', GETPERSONA)],
+}).proposals.find(p => p.domain === 'o.com').bounceOnset;
+
+check('movement inside the noise does not fire',
+      onsetOf('2026-10-20~~1000~1~|2026-10-21~~1000~1~|2026-10-22~~1000~1~|' +
+              '2026-10-23~~1000~5~|2026-10-24~~1000~5~|2026-10-25~~1000~5~'), null);
+// Over the floor, on plenty of mail, and still not an onset: 0.8% to 1.0% is
+// drift, not a list going bad. Only the rise factor rejects this one.
+check('a small rise above the floor does not fire',
+      onsetOf('2026-10-20~~1000~8~|2026-10-21~~1000~8~|2026-10-22~~1000~8~|' +
+              '2026-10-23~~1000~10~|2026-10-24~~1000~10~|2026-10-25~~1000~10~'), null);
+check('a 2.5x rise on too little mail does not fire',
+      onsetOf('2026-10-20~~1000~2~|2026-10-21~~1000~2~|2026-10-22~~1000~2~|' +
+              '2026-10-23~~50~2~|2026-10-24~~50~2~|2026-10-25~~50~2~'), null);
+check('no baseline to rise from does not fire',
+      onsetOf('2026-10-23~~1000~30~|2026-10-24~~1000~30~|2026-10-25~~1000~30~'), null);
+
+// A rise from exactly zero is the clearest onset there is, and `base * factor`
+// being 0 must not be read as "nothing to compare against".
+const fromZero = onsetOf('2026-10-20~~1000~0~|2026-10-21~~1000~0~|2026-10-22~~1000~0~|' +
+                         '2026-10-23~~1000~10~|2026-10-24~~1000~10~|2026-10-25~~1000~10~');
+check('a rise from zero fires', fromZero !== null, true);
+near('…reported as 1.00% against 0.00%', fromZero.recentPct, 1.0, 0.01);
+
+// WATCH is a floor the onset raises TO, never a ceiling it drags a domain down to.
+const onsetOnBad = decide({ domains: [D('bad.com',
+  '2026-10-12~2.5~2000~0~100|2026-10-13~2.5~2000~0~100|2026-10-14~2.5~2000~0~100|' +
+  '2026-10-15~2.5~2000~0~100|2026-10-16~~2000~30~|2026-10-17~~2000~30~|2026-10-18~~2000~30~')] })
+  .proposals.find(p => p.domain === 'bad.com');
+check('an onset never talks a quarantined domain down', onsetOnBad.state, 'QUARANTINE');
+
 console.log('\nthe reading floor tightens as the reading worsens');
 
 // Same two days, three severities. Two readings is enough to act on a severe

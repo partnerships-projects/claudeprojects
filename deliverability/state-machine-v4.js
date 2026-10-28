@@ -118,6 +118,16 @@ const CONFIG = {
   // On this fleet nothing currently reaches 2% (worst is tools-forcreators.com
   // at 1.70%), which is the right property for a new signal: it fires on a
   // genuinely bad case rather than retrofitting the fleet we already have.
+  // Bounce ONSET. The absolute lines above are a verdict on a level; this is a
+  // verdict on a shape, and it fires below them. Mailjet reports same-day with
+  // a real denominator at any volume, so a bounce rate CLIMBING is readable
+  // well before it reaches 2% -- and a list going bad is a thing you want to
+  // catch while it is going, not once it has gone.
+  bounceSpikeWindow:  3,
+  bounceSpikeFactor:  2.5,
+  bounceSpikeFloor:   0.75,   // recent window must be genuinely elevated
+  bounceSpikeMinSent: 300,    // ...on enough mail to be a rate, not a tally
+
   hardBounceWarn:   2.0,
   hardBounceSevere: 5.0,
   hardBounceMinSent: 500,   // same reasoning as the volume gate below
@@ -281,6 +291,33 @@ function publishedDays(domains) {
 }
 
 /**
+ * A hard bounce rate CLIMBING against its own recent baseline.
+ *
+ * Deliberately a shape rather than a level, and deliberately not borrowed from
+ * the spam spike detector: the spam rate is Google's aggregate with a floor
+ * under it and days of lag, while this is a plain ratio of two Mailjet counters
+ * on the same day. It can be trusted at a finer grain than the spam rate can.
+ *
+ * A rise from exactly zero counts -- `base * factor` is then 0, and any recent
+ * rate clears it. That is intended: zero to 1% is the clearest onset there is.
+ */
+function bounceOnset(mjRows, cfg) {
+  const sorted = [...mjRows].sort((a, b) => (a.date < b.date ? 1 : -1));  // newest first
+  const rate = rs => {
+    const sent = rs.reduce((t, r) => t + (r.sent || 0), 0);
+    if (!sent) return null;
+    return { pct: (rs.reduce((t, r) => t + (r.hardBounced || 0), 0) / sent) * 100, sent };
+  };
+  const R = rate(sorted.slice(0, cfg.bounceSpikeWindow));
+  const B = rate(sorted.slice(cfg.bounceSpikeWindow));
+  if (!R || !B) return null;                          // no baseline to rise from
+  if (R.sent < cfg.bounceSpikeMinSent) return null;   // a tally, not a rate
+  if (R.pct < cfg.bounceSpikeFloor) return null;      // movement inside the noise
+  if (R.pct < B.pct * cfg.bounceSpikeFactor) return null;
+  return { recentPct: R.pct, baselinePct: B.pct, recentSent: R.sent };
+}
+
+/**
  * Fleet-wide authentication incident: domains that reported VOLUME on a day and
  * still failed DMARC. Requiring volume is the whole point -- it is what a
  * reporting-lag day cannot produce, and what made v2 cry incident three times
@@ -360,7 +397,18 @@ function pooled(rows, cfg) {
 }
 
 function evidence(d, published, cfg) {
+  // Two different windows, on purpose.
+  //
+  // `rows` is what GOOGLE published, and the spam rate, auth and volume figures
+  // are computed over it because those are Google's to publish.
+  //
+  // `mjRows` is what MAILJET recorded, and is NOT filtered by Google's
+  // publication at all. Postmaster runs about four days behind; filtering the
+  // Mailjet counters through Google's published set threw away the four
+  // freshest days on every domain, every run -- the newest and most specific
+  // data we hold, discarded because a different provider had not caught up.
   const rows = (d.readings || []).filter(r => published.has(r.date));
+  const mjRows = (d.readings || []).filter(r => r.sent > 0);
   const spam = rows.map(r => r.spamRate).filter(v => v !== null && v !== undefined);
   const vols = rows.map(r => r.volume).filter(v => v !== null && v !== undefined);
 
@@ -388,7 +436,9 @@ function evidence(d, published, cfg) {
   // Mailjet counters, pooled over the same rows. Context for a human now; see
   // "FUTURE SIGNALS" at the foot of this file for what would have to be true
   // before any of them earns a place in the ladder.
-  const sum = key => rows.reduce((t, r) => t + (r[key] || 0), 0);
+  const sum = key => mjRows.reduce((t, r) => t + (r[key] || 0), 0);
+  const latest = rs => (rs.length ? rs.map(r => r.date).sort().slice(-1)[0] : null);
+  const mjThrough = latest(mjRows), pmThrough = latest(rows);
   const mjSent = sum('sent');
   const pct = n => (mjSent ? (n / mjSent) * 100 : null);
 
@@ -398,6 +448,12 @@ function evidence(d, published, cfg) {
     hardBounced: sum('hardBounced'), hardBouncePct: pct(sum('hardBounced')),
     blocked:     sum('blocked'),     blockedPct:    pct(sum('blocked')),
     unsubscribed: sum('unsubscribed'), unsubPct:    pct(sum('unsubscribed')),
+    mjDays: mjRows.length,
+    bounceOnset: bounceOnset(mjRows, cfg),
+    // So a human can see at a glance which provider each figure came from and
+    // how stale it is. These routinely differ by ~4 days.
+    mjThrough, pmThrough,
+    mjDaysAhead: (mjThrough && pmThrough) ? daysBetween(pmThrough, mjThrough) : null,
     readingCount: spam.length,
     nonZeroCount: nonZero,
     hitRate:      spam.length ? nonZero / spam.length : null,
@@ -473,6 +529,16 @@ function bounceVerdict(ev, cfg) {
     return { level: 'THROTTLE',
              reason: `hard bounce ${ev.hardBouncePct.toFixed(2)}% ${tail} — above the ` +
                      `${cfg.hardBounceWarn}% level that calls list quality into question` };
+  }
+  // Below both lines, a rate on the way up is still a list going bad. WATCH is
+  // the honest level for it: elevated, worth a look, not yet an action.
+  const on = ev.bounceOnset;
+  if (on) {
+    return { level: 'WATCH',
+             reason: `hard bounce RISING — ${on.recentPct.toFixed(2)}% over the last ` +
+                     `${cfg.bounceSpikeWindow} Mailjet days against ${on.baselinePct.toFixed(2)}% ` +
+                     `before them (${on.recentSent.toLocaleString()} sent). Below the ` +
+                     `${cfg.hardBounceWarn}% line, but moving toward it.` };
   }
   return null;
 }
@@ -703,6 +769,10 @@ function decide({ domains, priorStates = {}, history = [], today, config = CONFI
       spiking: ev.spiking,
       // Context, not score. See FUTURE SIGNALS.
       hardBouncePct: ev.hardBouncePct,
+      mjSent:        ev.mjSent,
+      bounceOnset:   ev.bounceOnset,
+      mjThrough:     ev.mjThrough,
+      pmThrough:     ev.pmThrough,
       blockedPct:    ev.blockedPct,
       unsubPct:      ev.unsubPct,
       acceptedRisks: accepted,
@@ -717,12 +787,19 @@ function decide({ domains, priorStates = {}, history = [], today, config = CONFI
     // nobody reads is worse than no list, and nothing here is automatic, so the
     // only cost of a quiet day is a quiet day.
     if ((decided.changed && isWorse(decided.state, 'WATCH')) ||
-        ev.spiking ||
+        ev.spiking || ev.bounceOnset ||
         ['QUARANTINE', 'RETIRE'].includes(decided.state)) {
       urgent.push({
         domain: d.domain, state: decided.state, advice: ADVICE[decided.state],
-        why: ev.spiking ? 'sharp onset' : decided.changed ? 'state got worse' : 'at the top of the ladder',
+        // A bounce onset is listed on its own merit, not as a footnote to the
+        // spam rate: it is same-day where the spam rate is four days old, so it
+        // is routinely the only thing here that reflects what is happening now.
+        why: ev.spiking         ? 'complaint rate spiking'
+           : ev.bounceOnset     ? 'hard bounce rising'
+           : decided.changed    ? 'state got worse'
+           :                      'at the top of the ladder',
         pooledSpam: ev.pooled.rate, sent: ev.pooled.sent, volume: ev.totalVolume,
+        hardBouncePct: ev.hardBouncePct, mjThrough: ev.mjThrough, pmThrough: ev.pmThrough,
       });
     }
   }
@@ -799,5 +876,6 @@ function decide({ domains, priorStates = {}, history = [], today, config = CONFI
 module.exports = {
   decide, CONFIG, LADDER, NON_LADDER, ADVICE, ACCEPTED_RISKS, CONFIG_REQUIREMENTS,
   publishedDays, detectFleetAuthIncidents, evidence, configIssues, rawState,
+  bounceVerdict, bounceOnset,
   applyHysteresis, pooled,
 };
